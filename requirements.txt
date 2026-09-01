@@ -1,0 +1,12 @@
+MetaTrader5>=5.0.45        # Windows VPS only
+python-binance>=1.0.19
+fastapi>=0.110
+uvicorn>=0.29
+scikit-learn>=1.4
+xgboost>=2.0
+pandas>=2.2
+numpy>=1.26
+redis>=5.0
+asyncpg>=0.29
+python-telegram-bot>=21.0
+pydantic>=2.6

@@ -1,0 +1,100 @@
+"""
+EchoMatrix — scanner.
+
+Ties the pieces together: pulls every symbol a broker exposes,
+runs Quick Brain on each, ranks opportunities, and (optionally)
+auto-executes the top signal through the risk manager. This is
+the loop that makes "scan and trade every instrument from one
+place" actually happen instead of being separate parts.
+"""
+
+import asyncio
+import logging
+from dataclasses import dataclass
+
+from brokers.base import BrokerConnector, OrderSide
+from strategies.quick_brain import QuickBrain, Signal, TrendReading
+from risk.risk_manager import RiskManager
+
+logger = logging.getLogger("echomatrix.scanner")
+
+
+@dataclass
+class ScannerConfig:
+    timeframe: str = "H1"
+    candle_count: int = 100
+    scan_interval_seconds: int = 300
+    min_signal_strength: float = 65.0
+    auto_execute: bool = False          # off by default — safety default
+    max_symbols_per_scan: int = 30      # cap so one cycle doesn't hammer the API
+
+
+class Scanner:
+    def __init__(self, broker: BrokerConnector, brain: QuickBrain,
+                 risk: RiskManager, config: ScannerConfig):
+        self.broker = broker
+        self.brain = brain
+        self.risk = risk
+        self.config = config
+        self.last_readings: list[TrendReading] = []
+        self._running = False
+
+    async def scan_once(self) -> list[TrendReading]:
+        symbols = await self.broker.get_symbols()
+        symbols = symbols[: self.config.max_symbols_per_scan]
+
+        readings: list[TrendReading] = []
+        for symbol in symbols:
+            try:
+                candles = await self.broker.get_candles(
+                    symbol, self.config.timeframe, self.config.candle_count
+                )
+                reading = self.brain.analyze(symbol, candles)
+                readings.append(reading)
+            except Exception as e:
+                logger.warning(f"scan failed for {symbol}: {e}")
+
+        self.last_readings = readings
+        ranked = self.brain.rank_opportunities(readings, self.config.min_signal_strength)
+
+        if self.config.auto_execute and ranked:
+            await self._execute_top(ranked[0])
+
+        return ranked
+
+    async def _execute_top(self, reading: TrendReading) -> None:
+        symbol_info = await self.broker.get_symbol_info(reading.symbol)
+        side = OrderSide.BUY if reading.signal == Signal.BUY else OrderSide.SELL
+        entry = symbol_info.ask if side == OrderSide.BUY else symbol_info.bid
+
+        # ATR-based stop — 1.5x ATR away from entry, direction-aware
+        stop_distance = reading.atr * 1.5 or entry * 0.01
+        stop = entry - stop_distance if side == OrderSide.BUY else entry + stop_distance
+
+        decision = await self.risk.check_trade(
+            self.broker, reading.symbol, side,
+            proposed_volume=symbol_info.min_volume,
+            entry_price=entry, stop_loss_price=stop,
+        )
+        if not decision.allowed:
+            logger.info(f"skip {reading.symbol}: {decision.reason}")
+            return
+
+        result = await self.broker.place_order(
+            reading.symbol, side, decision.suggested_volume,
+            sl=stop, comment=f"EchoMatrix QuickBrain {reading.strength}",
+        )
+        logger.info(f"{'executed' if result.success else 'failed'} {reading.symbol}: {result.message}")
+
+    async def run_forever(self) -> None:
+        self._running = True
+        while self._running:
+            try:
+                ranked = await self.scan_once()
+                logger.info(f"scan complete: {len(ranked)} actionable signals")
+            except Exception as e:
+                logger.error(f"scan cycle error: {e}")
+            await asyncio.sleep(self.config.scan_interval_seconds)
+
+    def stop(self) -> None:
+        self._running = False
