@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>EchoMatrix</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --card: #131a22;
+    --border: #232d38;
+    --text: #e8edf2;
+    --muted: #8a97a5;
+    --accent: #2dd4bf;
+    --danger: #f87171;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 20px 16px 60px;
+  }
+  h1 {
+    font-size: 22px;
+    margin: 4px 0 2px;
+  }
+  .sub {
+    color: var(--muted);
+    font-size: 13px;
+    margin-bottom: 20px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  .card-title {
+    font-size: 16px;
+    font-weight: 600;
+  }
+  .badge {
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-weight: 600;
+  }
+  .badge.connected { background: rgba(74,222,128,0.15); color: var(--ok); }
+  .badge.saved { background: rgba(251,191,36,0.15); color: var(--warn); }
+  .badge.off { background: rgba(138,151,165,0.15); color: var(--muted); }
+  label {
+    display: block;
+    font-size: 13px;
+    color: var(--muted);
+    margin: 10px 0 5px;
+  }
+  input[type=text], input[type=password] {
+    width: 100%;
+    background: #0e141b;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 11px 12px;
+    color: var(--text);
+    font-size: 15px;
+  }
+  input:focus { outline: 1px solid var(--accent); }
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .toggle-row label { margin: 0; }
+  .btn-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 16px;
+  }
+  button {
+    border: none;
+    border-radius: 8px;
+    padding: 11px 16px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .btn-save {
+    background: var(--accent);
+    color: #04211d;
+    flex: 1;
+  }
+  .btn-remove {
+    background: transparent;
+    color: var(--danger);
+    border: 1px solid rgba(248,113,113,0.4);
+  }
+  .msg {
+    font-size: 13px;
+    margin-top: 10px;
+    min-height: 16px;
+  }
+  .msg.ok { color: var(--ok); }
+  .msg.err { color: var(--danger); }
+  .footer-note {
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+    margin-top: 24px;
+  }
+</style>
+</head>
+<body>
+
+<h1>EchoMatrix</h1>
+<div class="sub">Connect your broker accounts below</div>
+
+<div id="cards"></div>
+
+<div class="footer-note">Keys are stored on this server only — never shown once saved.</div>
+
+<script>
+const brokers = [
+  {
+    id: "binance",
+    name: "Binance",
+    fields: [
+      { key: "api_key", label: "API Key", type: "text" },
+      { key: "api_secret", label: "API Secret", type: "password" },
+    ],
+    toggle: { key: "testnet", label: "Use Testnet (practice funds)" },
+  },
+  {
+    id: "deriv",
+    name: "Deriv",
+    fields: [
+      { key: "api_token", label: "API Token", type: "password" },
+      { key: "app_id", label: "App ID (leave as 1089 if unsure)", type: "text", placeholder: "1089" },
+    ],
+  },
+];
+
+const container = document.getElementById("cards");
+
+function renderCard(broker, status) {
+  const st = status[broker.id] || { configured: false, connected: false };
+  const badgeClass = st.connected ? "connected" : st.configured ? "saved" : "off";
+  const badgeText = st.connected ? "Connected" : st.configured ? "Saved, not connected" : "Not set up";
+
+  const fieldsHtml = broker.fields.map(f => `
+    <label for="${broker.id}-${f.key}">${f.label}</label>
+    <input type="${f.type}" id="${broker.id}-${f.key}" placeholder="${f.placeholder || ''}" />
+  `).join("");
+
+  const toggleHtml = broker.toggle ? `
+    <div class="toggle-row">
+      <input type="checkbox" id="${broker.id}-${broker.toggle.key}" ${st.configured && st.testnet !== false ? "checked" : ""} />
+      <label for="${broker.id}-${broker.toggle.key}" style="margin:0;">${broker.toggle.label}</label>
+    </div>
+  ` : "";
+
+  const div = document.createElement("div");
+  div.className = "card";
+  div.innerHTML = `
+    <div class="card-header">
+      <div class="card-title">${broker.name}</div>
+      <div class="badge ${badgeClass}">${badgeText}</div>
+    </div>
+    ${fieldsHtml}
+    ${toggleHtml}
+    <div class="btn-row">
+      <button class="btn-save">Save & Connect</button>
+      ${st.configured ? `<button class="btn-remove">Remove</button>` : ""}
+    </div>
+    <div class="msg"></div>
+  `;
+
+  div.querySelector(".btn-save").addEventListener("click", () => saveCredentials(broker, div));
+  const removeBtn = div.querySelector(".btn-remove");
+  if (removeBtn) removeBtn.addEventListener("click", () => removeCredentials(broker, div));
+
+  return div;
+}
+
+async function saveCredentials(broker, cardEl) {
+  const msg = cardEl.querySelector(".msg");
+  const body = {};
+  for (const f of broker.fields) {
+    body[f.key] = cardEl.querySelector(`#${broker.id}-${f.key}`).value.trim();
+  }
+  if (broker.toggle) {
+    body[broker.toggle.key] = cardEl.querySelector(`#${broker.id}-${broker.toggle.key}`).checked;
+  }
+  msg.textContent = "Connecting...";
+  msg.className = "msg";
+  try {
+    const resp = await fetch(`/api/credentials/${broker.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.connected) {
+      msg.textContent = "Connected successfully.";
+      msg.className = "msg ok";
+    } else if (resp.ok) {
+      msg.textContent = "Saved, but couldn't connect: " + (data.message || "check your keys");
+      msg.className = "msg err";
+    } else {
+      msg.textContent = data.detail || "Something went wrong.";
+      msg.className = "msg err";
+    }
+  } catch (e) {
+    msg.textContent = "Network error — try again.";
+    msg.className = "msg err";
+  }
+  loadStatus();
+}
+
+async function removeCredentials(broker, cardEl) {
+  const msg = cardEl.querySelector(".msg");
+  try {
+    await fetch(`/api/credentials/${broker.id}`, { method: "DELETE" });
+    msg.textContent = "Removed.";
+    msg.className = "msg ok";
+  } catch (e) {
+    msg.textContent = "Couldn't remove — try again.";
+    msg.className = "msg err";
+  }
+  loadStatus();
+}
+
+async function loadStatus() {
+  const resp = await fetch("/api/status");
+  const data = await resp.json();
+  container.innerHTML = "";
+  brokers.forEach(b => container.appendChild(renderCard(b, data.brokers || {})));
+}
+
+loadStatus();
+</script>
+
+</body>
+</html>

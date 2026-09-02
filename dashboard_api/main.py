@@ -13,8 +13,10 @@ Run: uvicorn dashboard_api.main:app --reload
 import os
 import asyncio
 import logging
+from pathlib import Path
 from typing import Optional
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 
 from brokers.base import BrokerConnector, OrderSide, OrderType
@@ -23,11 +25,15 @@ from brokers.deriv_connector import DerivConnector
 from risk.risk_manager import RiskManager, RiskConfig
 from strategies.quick_brain import QuickBrain
 from core.scanner import Scanner, ScannerConfig
+from storage import credentials_store as creds_store
 
 logging.basicConfig(level=logging.INFO)
-app = FastAPI(title="EchoMatrix Lite Engine", version="0.2.0")
+app = FastAPI(title="EchoMatrix Lite Engine", version="0.3.0")
 
-# Registered brokers, keyed by name. Populated on startup from env/secrets.
+STATIC_DIR = Path(__file__).parent / "static"
+
+# Registered brokers, keyed by name. Populated on startup from env vars
+# and/or the dashboard's saved credentials (env vars take priority).
 brokers: dict[str, BrokerConnector] = {}
 risk_manager = RiskManager(RiskConfig())
 brain = QuickBrain()
@@ -35,26 +41,43 @@ scanners: dict[str, Scanner] = {}
 _scan_tasks: dict[str, asyncio.Task] = {}
 
 
+def _register_broker(name: str, connector: BrokerConnector) -> None:
+    """Wire a freshly-connected broker into the live scanner set."""
+    brokers[name] = connector
+    scanners[name] = Scanner(connector, brain, risk_manager, ScannerConfig())
+
+
+async def _connect_binance(api_key: str, api_secret: str, testnet: bool) -> Optional[BinanceConnector]:
+    connector = BinanceConnector(api_key, api_secret, testnet=testnet)
+    return connector if await connector.connect() else None
+
+
+async def _connect_deriv(api_token: str, app_id: str) -> Optional[DerivConnector]:
+    connector = DerivConnector(api_token, app_id=app_id or "1089")
+    return connector if await connector.connect() else None
+
+
 @app.on_event("startup")
 async def startup():
-    # Binance — optional, only connects if credentials are present
-    b_key, b_secret = os.getenv("BINANCE_API_KEY"), os.getenv("BINANCE_API_SECRET")
+    stored = creds_store.get_all()
+
+    # Binance — env vars first, then dashboard-saved credentials
+    b_key = os.getenv("BINANCE_API_KEY") or (stored.get("binance") or {}).get("api_key")
+    b_secret = os.getenv("BINANCE_API_SECRET") or (stored.get("binance") or {}).get("api_secret")
+    b_testnet_raw = os.getenv("BINANCE_TESTNET")
+    b_testnet = (b_testnet_raw == "true") if b_testnet_raw is not None else (stored.get("binance") or {}).get("testnet", True)
     if b_key and b_secret:
-        binance = BinanceConnector(b_key, b_secret, testnet=os.getenv("BINANCE_TESTNET", "true") == "true")
-        if await binance.connect():
-            brokers["binance"] = binance
+        binance = await _connect_binance(b_key, b_secret, b_testnet)
+        if binance:
+            _register_broker("binance", binance)
 
-    # Deriv — optional, only connects if credentials are present
-    d_token = os.getenv("DERIV_API_TOKEN")
+    # Deriv — env vars first, then dashboard-saved credentials
+    d_token = os.getenv("DERIV_API_TOKEN") or (stored.get("deriv") or {}).get("api_token")
+    d_app_id = os.getenv("DERIV_APP_ID") or (stored.get("deriv") or {}).get("app_id") or "1089"
     if d_token:
-        deriv = DerivConnector(d_token, app_id=os.getenv("DERIV_APP_ID", "1089"))
-        if await deriv.connect():
-            brokers["deriv"] = deriv
-
-    # A scanner per connected broker, auto_execute OFF by default — start it
-    # explicitly via POST /{broker}/scan/start once you're ready to go live.
-    for name, broker in brokers.items():
-        scanners[name] = Scanner(broker, brain, risk_manager, ScannerConfig())
+        deriv = await _connect_deriv(d_token, d_app_id)
+        if deriv:
+            _register_broker("deriv", deriv)
 
 
 @app.on_event("shutdown")
@@ -81,14 +104,76 @@ class OrderRequest(BaseModel):
     tp: Optional[float] = None
 
 
-@app.get("/")
-async def root():
-    return {"status": "ok", "connected_brokers": list(brokers.keys())}
+@app.get("/", response_class=HTMLResponse)
+async def dashboard():
+    return FileResponse(STATIC_DIR / "dashboard.html")
+
+
+@app.get("/api/status")
+async def api_status():
+    stored = creds_store.get_all()
+    result = {}
+    for name in ("binance", "deriv"):
+        saved = stored.get(name)
+        result[name] = {
+            "configured": bool(saved) or bool(os.getenv(f"{name.upper()}_API_KEY") or os.getenv(f"{name.upper()}_API_TOKEN")),
+            "connected": name in brokers,
+        }
+        if name == "binance" and saved:
+            result[name]["testnet"] = saved.get("testnet", True)
+    return {"brokers": result}
 
 
 @app.get("/brokers")
 async def list_brokers():
     return {"connected": list(brokers.keys())}
+
+
+class BinanceCredentials(BaseModel):
+    api_key: str
+    api_secret: str
+    testnet: bool = True
+
+
+class DerivCredentials(BaseModel):
+    api_token: str
+    app_id: str = "1089"
+
+
+@app.post("/api/credentials/binance")
+async def save_binance_credentials(req: BinanceCredentials):
+    connector = await _connect_binance(req.api_key, req.api_secret, req.testnet)
+    if not connector:
+        creds_store.save("binance", req.model_dump())
+        return {"connected": False, "message": "saved, but couldn't connect — check the key/secret"}
+    if "binance" in brokers:
+        await brokers["binance"].disconnect()
+    _register_broker("binance", connector)
+    creds_store.save("binance", req.model_dump())
+    return {"connected": True}
+
+
+@app.post("/api/credentials/deriv")
+async def save_deriv_credentials(req: DerivCredentials):
+    connector = await _connect_deriv(req.api_token, req.app_id)
+    if not connector:
+        creds_store.save("deriv", req.model_dump())
+        return {"connected": False, "message": "saved, but couldn't connect — check the token"}
+    if "deriv" in brokers:
+        await brokers["deriv"].disconnect()
+    _register_broker("deriv", connector)
+    creds_store.save("deriv", req.model_dump())
+    return {"connected": True}
+
+
+@app.delete("/api/credentials/{broker_name}")
+async def delete_credentials(broker_name: str):
+    if broker_name in brokers:
+        await brokers[broker_name].disconnect()
+        del brokers[broker_name]
+        scanners.pop(broker_name, None)
+    creds_store.delete(broker_name)
+    return {"status": "removed"}
 
 
 @app.get("/{broker_name}/account")
