@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from brokers.base import BrokerConnector, OrderSide, OrderType
 from brokers.binance_connector import BinanceConnector
-from brokers.oanda_connector import OandaConnector
+from brokers.deriv_connector import DerivConnector
 from risk.risk_manager import RiskManager, RiskConfig
 from strategies.quick_brain import QuickBrain
 from core.scanner import Scanner, ScannerConfig
@@ -44,12 +44,12 @@ async def startup():
         if await binance.connect():
             brokers["binance"] = binance
 
-    # OANDA — optional, only connects if credentials are present
-    o_token, o_account = os.getenv("OANDA_API_TOKEN"), os.getenv("OANDA_ACCOUNT_ID")
-    if o_token and o_account:
-        oanda = OandaConnector(o_token, o_account, practice=os.getenv("OANDA_PRACTICE", "true") == "true")
-        if await oanda.connect():
-            brokers["oanda"] = oanda
+    # Deriv — optional, only connects if credentials are present
+    d_token = os.getenv("DERIV_API_TOKEN")
+    if d_token:
+        deriv = DerivConnector(d_token, app_id=os.getenv("DERIV_APP_ID", "1089"))
+        if await deriv.connect():
+            brokers["deriv"] = deriv
 
     # A scanner per connected broker, auto_execute OFF by default — start it
     # explicitly via POST /{broker}/scan/start once you're ready to go live.
