@@ -162,12 +162,118 @@
     margin-top: 6px;
   }
   .db-status.ok { color: var(--ok); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  .empty-row { color: var(--muted); text-align: center; padding: 16px 0; }
+  .stat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 4px;
+  }
+  .stat {
+    background: #0e141b;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .stat .value { font-size: 18px; font-weight: 700; margin-top: 2px; }
+  select {
+    width: 100%;
+    background: #0e141b;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 11px 12px;
+    color: var(--text);
+    font-size: 15px;
+  }
+  .row-2 { display: flex; gap: 10px; }
+  .row-2 > div { flex: 1; }
+  canvas { max-width: 100%; }
+  .pill-buy { color: var(--ok); font-weight: 600; }
+  .pill-sell { color: var(--danger); font-weight: 600; }
+  .signal-score { font-weight: 700; color: var(--accent); }
+  .hint { color: var(--muted); font-size: 13px; text-align: center; padding: 10px 0; }
+  .close-btn {
+    background: transparent;
+    border: 1px solid rgba(248,113,113,0.4);
+    color: var(--danger);
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+  }
 </style>
 </head>
 <body>
 
 <h1>EchoMatrix</h1>
-<div class="sub">Connect your broker and AI accounts below</div>
+<div class="sub">Your live trading dashboard</div>
+
+<div class="section-title">Live Dashboard</div>
+<div class="card" id="no-broker-hint" style="display:none;">
+  <div class="hint">Connect a broker below to see your account, positions, and live chart here.</div>
+</div>
+
+<div id="live-dashboard" style="display:none;">
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Account</div>
+      <select id="live-broker-select" style="width:auto;"></select>
+    </div>
+    <div class="stat-grid">
+      <div class="stat"><div class="label">Balance</div><div class="value" id="stat-balance">—</div></div>
+      <div class="stat"><div class="label">Equity</div><div class="value" id="stat-equity">—</div></div>
+      <div class="stat"><div class="label">Free Margin</div><div class="value" id="stat-margin">—</div></div>
+      <div class="stat"><div class="label">Currency</div><div class="value" id="stat-currency">—</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><div class="card-title">Price Chart</div></div>
+    <div class="row-2">
+      <div>
+        <label for="chart-symbol">Symbol</label>
+        <input type="text" id="chart-symbol" placeholder="e.g. BTCUSDT or frxXAUUSD" />
+      </div>
+      <div>
+        <label for="chart-timeframe">Timeframe</label>
+        <select id="chart-timeframe">
+          <option value="M15">15m</option>
+          <option value="H1" selected>1h</option>
+          <option value="H4">4h</option>
+          <option value="D1">1d</option>
+        </select>
+      </div>
+    </div>
+    <div class="btn-row"><button class="btn-save" id="chart-load-btn">Load Chart</button></div>
+    <canvas id="price-chart" height="220"></canvas>
+    <div id="chart-msg" class="msg"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Open Positions</div>
+      <button class="close-btn" id="refresh-positions-btn" style="color:var(--muted);border-color:var(--border);">Refresh</button>
+    </div>
+    <table id="positions-table">
+      <thead><tr><th>Symbol</th><th>Side</th><th>Vol</th><th>P/L</th><th></th></tr></thead>
+      <tbody><tr><td colspan="5" class="empty-row">No open positions</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Quick Brain Scanner</div>
+      <button class="close-btn" id="run-scan-btn" style="color:var(--accent);border-color:var(--accent);">Scan Now</button>
+    </div>
+    <table id="scan-table">
+      <thead><tr><th>Symbol</th><th>Signal</th><th>Score</th></tr></thead>
+      <tbody><tr><td colspan="3" class="empty-row">Tap "Scan Now" to rank live opportunities</td></tr></tbody>
+    </table>
+  </div>
+</div>
 
 <div class="section-title">Brokers</div>
 <div id="broker-cards"></div>
@@ -188,6 +294,7 @@
 <div class="db-status" id="db-status"></div>
 <div class="footer-note">Keys are stored on this server only — never shown once saved.</div>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script>
 const brokers = [
   {
@@ -330,7 +437,190 @@ async function loadStatus() {
   const dbEl = document.getElementById("db-status");
   dbEl.textContent = data.database ? "Database: connected" : "Database: not connected";
   dbEl.className = "db-status" + (data.database ? " ok" : "");
+
+  updateLiveDashboard(data.brokers || {});
 }
+
+// ---------- Live Dashboard ----------
+
+let priceChart = null;
+let currentBroker = null;
+
+function connectedBrokerIds(statusBrokers) {
+  return Object.keys(statusBrokers).filter(id => statusBrokers[id].connected);
+}
+
+function updateLiveDashboard(statusBrokers) {
+  const connected = connectedBrokerIds(statusBrokers);
+  const liveEl = document.getElementById("live-dashboard");
+  const hintEl = document.getElementById("no-broker-hint");
+
+  if (connected.length === 0) {
+    liveEl.style.display = "none";
+    hintEl.style.display = "block";
+    currentBroker = null;
+    return;
+  }
+  hintEl.style.display = "none";
+  liveEl.style.display = "block";
+
+  const select = document.getElementById("live-broker-select");
+  const prevValue = select.value;
+  select.innerHTML = connected.map(id => `<option value="${id}">${id}</option>`).join("");
+  select.value = connected.includes(prevValue) ? prevValue : connected[0];
+
+  if (currentBroker !== select.value) {
+    currentBroker = select.value;
+    refreshAccount();
+    refreshPositions();
+  }
+}
+
+document.getElementById("live-broker-select").addEventListener("change", (e) => {
+  currentBroker = e.target.value;
+  refreshAccount();
+  refreshPositions();
+});
+
+async function refreshAccount() {
+  if (!currentBroker) return;
+  try {
+    const resp = await fetch(`/${currentBroker}/account`);
+    const acc = await resp.json();
+    document.getElementById("stat-balance").textContent = fmtMoney(acc.balance);
+    document.getElementById("stat-equity").textContent = fmtMoney(acc.equity);
+    document.getElementById("stat-margin").textContent = fmtMoney(acc.free_margin);
+    document.getElementById("stat-currency").textContent = acc.currency || "—";
+  } catch (e) {
+    document.getElementById("stat-balance").textContent = "err";
+  }
+}
+
+function fmtMoney(v) {
+  if (v === undefined || v === null) return "—";
+  return Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+async function refreshPositions() {
+  if (!currentBroker) return;
+  const tbody = document.querySelector("#positions-table tbody");
+  try {
+    const resp = await fetch(`/${currentBroker}/positions`);
+    const positions = await resp.json();
+    if (!positions.length) {
+      tbody.innerHTML = `<tr><td colspan="5" class="empty-row">No open positions</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = positions.map(p => `
+      <tr>
+        <td>${p.symbol}</td>
+        <td class="${p.side === 'buy' ? 'pill-buy' : 'pill-sell'}">${p.side}</td>
+        <td>${p.volume}</td>
+        <td class="${p.profit >= 0 ? 'pill-buy' : 'pill-sell'}">${fmtMoney(p.profit)}</td>
+        <td><button class="close-btn" data-id="${p.id}">Close</button></td>
+      </tr>
+    `).join("");
+    tbody.querySelectorAll(".close-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        await fetch(`/${currentBroker}/positions/${btn.dataset.id}`, { method: "DELETE" });
+        refreshPositions();
+        refreshAccount();
+      });
+    });
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" class="empty-row">Couldn't load positions</td></tr>`;
+  }
+}
+
+document.getElementById("refresh-positions-btn").addEventListener("click", refreshPositions);
+
+document.getElementById("chart-load-btn").addEventListener("click", async () => {
+  const symbol = document.getElementById("chart-symbol").value.trim();
+  const timeframe = document.getElementById("chart-timeframe").value;
+  const msg = document.getElementById("chart-msg");
+  if (!currentBroker || !symbol) {
+    msg.textContent = "Enter a symbol first.";
+    msg.className = "msg err";
+    return;
+  }
+  msg.textContent = "Loading...";
+  msg.className = "msg";
+  try {
+    const resp = await fetch(`/${currentBroker}/candles/${encodeURIComponent(symbol)}?timeframe=${timeframe}&count=100`);
+    if (!resp.ok) {
+      const err = await resp.json();
+      msg.textContent = err.detail || "Couldn't load candles.";
+      msg.className = "msg err";
+      return;
+    }
+    const candles = await resp.json();
+    if (!candles.length) {
+      msg.textContent = "No candle data returned for that symbol.";
+      msg.className = "msg err";
+      return;
+    }
+    drawChart(candles, symbol);
+    msg.textContent = "";
+  } catch (e) {
+    msg.textContent = "Network error loading chart.";
+    msg.className = "msg err";
+  }
+});
+
+function drawChart(candles, symbol) {
+  const ctx = document.getElementById("price-chart");
+  const labels = candles.map(c => new Date(c.time * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }));
+  const closes = candles.map(c => c.close);
+  if (priceChart) priceChart.destroy();
+  priceChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: symbol,
+        data: closes,
+        borderColor: "#2dd4bf",
+        backgroundColor: "rgba(45,212,191,0.08)",
+        borderWidth: 2,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.15,
+      }],
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: "#8a97a5", maxTicksLimit: 6 }, grid: { color: "#232d38" } },
+        y: { ticks: { color: "#8a97a5" }, grid: { color: "#232d38" } },
+      },
+    },
+  });
+}
+
+document.getElementById("run-scan-btn").addEventListener("click", async () => {
+  if (!currentBroker) return;
+  const tbody = document.querySelector("#scan-table tbody");
+  tbody.innerHTML = `<tr><td colspan="3" class="empty-row">Scanning...</td></tr>`;
+  try {
+    const resp = await fetch(`/${currentBroker}/scan`, { method: "POST" });
+    const ranked = await resp.json();
+    if (!ranked.length) {
+      tbody.innerHTML = `<tr><td colspan="3" class="empty-row">No signals found this pass</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = ranked.map(r => `
+      <tr>
+        <td>${r.symbol}</td>
+        <td class="${r.signal === 'buy' ? 'pill-buy' : r.signal === 'sell' ? 'pill-sell' : ''}">${r.signal}</td>
+        <td class="signal-score">${Math.round(r.strength)}</td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="3" class="empty-row">Scan failed</td></tr>`;
+  }
+});
 
 document.getElementById("research-btn").addEventListener("click", async () => {
   const q = document.getElementById("research-q").value.trim();
