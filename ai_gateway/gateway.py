@@ -83,7 +83,7 @@ class AIGateway:
                 resp = client.chat.completions.create(
                     model=GROQ_MODEL,
                     messages=[{"role": "user", "content": "Reply with just: ok"}],
-                    max_tokens=5,
+                    max_tokens=50,  # gpt-oss is a reasoning model — needs headroom beyond the reply itself
                 )
                 text = (resp.choices[0].message.content or "").strip()
                 return (bool(text), "" if text else "Groq responded with no text")
