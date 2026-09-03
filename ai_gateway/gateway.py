@@ -70,12 +70,13 @@ class AIGateway:
 
         raise RuntimeError("No AI provider configured — add a Gemini or Groq key in the dashboard")
 
-    async def test_key(self, provider: str, api_key: str) -> bool:
+    async def test_key(self, provider: str, api_key: str) -> tuple[bool, str]:
         try:
             if provider == "gemini":
                 client = genai.Client(api_key=api_key)
                 resp = await client.aio.models.generate_content(model=GEMINI_MODEL, contents="Reply with just: ok")
-                return bool(resp.text)
+                text = (resp.text or "").strip()
+                return (bool(text), "" if text else "Gemini responded with no text (check the API key has access to " + GEMINI_MODEL + ")")
             if provider == "groq":
                 client = Groq(api_key=api_key)
                 resp = client.chat.completions.create(
@@ -83,10 +84,11 @@ class AIGateway:
                     messages=[{"role": "user", "content": "Reply with just: ok"}],
                     max_tokens=5,
                 )
-                return bool(resp.choices[0].message.content)
-        except Exception:
-            return False
-        return False
+                text = (resp.choices[0].message.content or "").strip()
+                return (bool(text), "" if text else "Groq responded with no text")
+        except Exception as e:
+            return (False, f"{type(e).__name__}: {e}")
+        return (False, "unknown provider")
 
 
 gateway = AIGateway()

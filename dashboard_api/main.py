@@ -195,10 +195,10 @@ class AICredentials(BaseModel):
 async def save_ai_credentials(provider: str, req: AICredentials):
     if provider not in ("gemini", "groq"):
         raise HTTPException(404, "unknown provider — use 'gemini' or 'groq'")
-    ok = await ai_gateway.test_key(provider, req.api_key)
+    ok, reason = await ai_gateway.test_key(provider, req.api_key)
     creds_store.save(provider, req.model_dump())
     if not ok:
-        return {"connected": False, "message": "saved, but the test call failed — check the key"}
+        return {"connected": False, "message": f"saved, but the test call failed — {reason}"}
     return {"connected": True}
 
 
