@@ -166,7 +166,10 @@ async def save_deriv_credentials(req: DerivCredentials):
     connector = await _connect_deriv(req.api_token, req.app_id)
     if not connector:
         creds_store.save("deriv", req.model_dump())
-        return {"connected": False, "message": "saved, but couldn't connect — check the token"}
+        return {
+            "connected": False,
+            "message": "saved, but couldn't connect — the default App ID (1089) is a shared demo ID that Deriv often rejects from servers. Register your own free app at api.deriv.com and put that App ID in the field above.",
+        }
     if "deriv" in brokers:
         await brokers["deriv"].disconnect()
     _register_broker("deriv", connector)

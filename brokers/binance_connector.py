@@ -33,10 +33,14 @@ class BinanceConnector(BrokerConnector):
     async def connect(self) -> bool:
         if AsyncClient is None:
             raise RuntimeError("python-binance not installed. pip install python-binance")
-        self.client = await AsyncClient.create(
-            self.api_key, self.api_secret, testnet=self.testnet
-        )
-        return True
+        try:
+            self.client = await AsyncClient.create(
+                self.api_key, self.api_secret, testnet=self.testnet
+            )
+            return True
+        except Exception:
+            self.client = None
+            return False
 
     async def disconnect(self) -> None:
         if self.client:
