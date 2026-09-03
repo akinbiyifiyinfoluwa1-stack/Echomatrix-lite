@@ -118,15 +118,74 @@
     text-align: center;
     margin-top: 24px;
   }
+  .section-title {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin: 26px 0 10px;
+  }
+  textarea {
+    width: 100%;
+    background: #0e141b;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 11px 12px;
+    color: var(--text);
+    font-size: 15px;
+    min-height: 70px;
+    font-family: inherit;
+    resize: vertical;
+  }
+  .finding {
+    background: #0e141b;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    margin-top: 12px;
+    font-size: 14px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+  .finding .provider-tag {
+    display: inline-block;
+    font-size: 11px;
+    color: var(--accent);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .db-status {
+    font-size: 12px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 6px;
+  }
+  .db-status.ok { color: var(--ok); }
 </style>
 </head>
 <body>
 
 <h1>EchoMatrix</h1>
-<div class="sub">Connect your broker accounts below</div>
+<div class="sub">Connect your broker and AI accounts below</div>
 
-<div id="cards"></div>
+<div class="section-title">Brokers</div>
+<div id="broker-cards"></div>
 
+<div class="section-title">AI Providers</div>
+<div id="ai-cards"></div>
+
+<div class="section-title">Research Engine</div>
+<div class="card">
+  <label for="research-q">Ask a market question</label>
+  <textarea id="research-q" placeholder="e.g. What tends to drive gold volatility around US CPI releases?"></textarea>
+  <div class="btn-row">
+    <button class="btn-save" id="research-btn">Ask</button>
+  </div>
+  <div id="research-out"></div>
+</div>
+
+<div class="db-status" id="db-status"></div>
 <div class="footer-note">Keys are stored on this server only — never shown once saved.</div>
 
 <script>
@@ -134,6 +193,7 @@ const brokers = [
   {
     id: "binance",
     name: "Binance",
+    endpointBase: "/api/credentials",
     fields: [
       { key: "api_key", label: "API Key", type: "text" },
       { key: "api_secret", label: "API Secret", type: "password" },
@@ -143,6 +203,7 @@ const brokers = [
   {
     id: "deriv",
     name: "Deriv",
+    endpointBase: "/api/credentials",
     fields: [
       { key: "api_token", label: "API Token", type: "password" },
       { key: "app_id", label: "App ID (leave as 1089 if unsure)", type: "text", placeholder: "1089" },
@@ -150,7 +211,23 @@ const brokers = [
   },
 ];
 
-const container = document.getElementById("cards");
+const aiProviders = [
+  {
+    id: "gemini",
+    name: "Google Gemini",
+    endpointBase: "/api/ai-credentials",
+    fields: [{ key: "api_key", label: "API Key", type: "password" }],
+  },
+  {
+    id: "groq",
+    name: "Groq",
+    endpointBase: "/api/ai-credentials",
+    fields: [{ key: "api_key", label: "API Key", type: "password" }],
+  },
+];
+
+const brokerContainer = document.getElementById("broker-cards");
+const aiContainer = document.getElementById("ai-cards");
 
 function renderCard(broker, status) {
   const st = status[broker.id] || { configured: false, connected: false };
@@ -204,7 +281,7 @@ async function saveCredentials(broker, cardEl) {
   msg.textContent = "Connecting...";
   msg.className = "msg";
   try {
-    const resp = await fetch(`/api/credentials/${broker.id}`, {
+    const resp = await fetch(`${broker.endpointBase}/${broker.id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -230,7 +307,7 @@ async function saveCredentials(broker, cardEl) {
 async function removeCredentials(broker, cardEl) {
   const msg = cardEl.querySelector(".msg");
   try {
-    await fetch(`/api/credentials/${broker.id}`, { method: "DELETE" });
+    await fetch(`${broker.endpointBase}/${broker.id}`, { method: "DELETE" });
     msg.textContent = "Removed.";
     msg.className = "msg ok";
   } catch (e) {
@@ -243,9 +320,39 @@ async function removeCredentials(broker, cardEl) {
 async function loadStatus() {
   const resp = await fetch("/api/status");
   const data = await resp.json();
-  container.innerHTML = "";
-  brokers.forEach(b => container.appendChild(renderCard(b, data.brokers || {})));
+
+  brokerContainer.innerHTML = "";
+  brokers.forEach(b => brokerContainer.appendChild(renderCard(b, data.brokers || {})));
+
+  aiContainer.innerHTML = "";
+  aiProviders.forEach(p => aiContainer.appendChild(renderCard(p, data.ai || {})));
+
+  const dbEl = document.getElementById("db-status");
+  dbEl.textContent = data.database ? "Database: connected" : "Database: not connected";
+  dbEl.className = "db-status" + (data.database ? " ok" : "");
 }
+
+document.getElementById("research-btn").addEventListener("click", async () => {
+  const q = document.getElementById("research-q").value.trim();
+  const out = document.getElementById("research-out");
+  if (!q) return;
+  out.innerHTML = `<div class="finding">Thinking...</div>`;
+  try {
+    const resp = await fetch("/research", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: q }),
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      out.innerHTML = `<div class="finding"><span class="provider-tag">${data.provider}</span>${data.finding}</div>`;
+    } else {
+      out.innerHTML = `<div class="finding" style="color:var(--danger)">${data.detail || "Something went wrong."}</div>`;
+    }
+  } catch (e) {
+    out.innerHTML = `<div class="finding" style="color:var(--danger)">Network error — try again.</div>`;
+  }
+});
 
 loadStatus();
 </script>

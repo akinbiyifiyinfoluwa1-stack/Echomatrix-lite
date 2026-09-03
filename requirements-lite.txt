@@ -6,3 +6,7 @@ uvicorn[standard]>=0.29
 pandas>=2.2
 numpy>=1.26
 pydantic>=2.6
+sqlalchemy>=2.0
+asyncpg>=0.29
+google-genai>=1.0
+groq>=0.11

@@ -19,6 +19,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
 
+from sqlalchemy import select
+
 from brokers.base import BrokerConnector, OrderSide, OrderType
 from brokers.binance_connector import BinanceConnector
 from brokers.deriv_connector import DerivConnector
@@ -26,6 +28,9 @@ from risk.risk_manager import RiskManager, RiskConfig
 from strategies.quick_brain import QuickBrain
 from core.scanner import Scanner, ScannerConfig
 from storage import credentials_store as creds_store
+from db.database import init_db, SessionLocal
+from db.models import ResearchFinding
+from ai_gateway.gateway import gateway as ai_gateway
 
 logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="EchoMatrix Lite Engine", version="0.3.0")
@@ -59,6 +64,9 @@ async def _connect_deriv(api_token: str, app_id: str) -> Optional[DerivConnector
 
 @app.on_event("startup")
 async def startup():
+    db_ready = await init_db()
+    logging.info("database %s", "connected and tables ready" if db_ready else "not configured — DATABASE_URL missing")
+
     stored = creds_store.get_all()
 
     # Binance — env vars first, then dashboard-saved credentials
@@ -121,7 +129,7 @@ async def api_status():
         }
         if name == "binance" and saved:
             result[name]["testnet"] = saved.get("testnet", True)
-    return {"brokers": result}
+    return {"brokers": result, "ai": ai_gateway.status(), "database": SessionLocal is not None}
 
 
 @app.get("/brokers")
@@ -174,6 +182,68 @@ async def delete_credentials(broker_name: str):
         scanners.pop(broker_name, None)
     creds_store.delete(broker_name)
     return {"status": "removed"}
+
+
+class AICredentials(BaseModel):
+    api_key: str
+
+
+@app.post("/api/ai-credentials/{provider}")
+async def save_ai_credentials(provider: str, req: AICredentials):
+    if provider not in ("gemini", "groq"):
+        raise HTTPException(404, "unknown provider — use 'gemini' or 'groq'")
+    ok = await ai_gateway.test_key(provider, req.api_key)
+    creds_store.save(provider, req.model_dump())
+    if not ok:
+        return {"connected": False, "message": "saved, but the test call failed — check the key"}
+    return {"connected": True}
+
+
+@app.delete("/api/ai-credentials/{provider}")
+async def delete_ai_credentials(provider: str):
+    creds_store.delete(provider)
+    return {"status": "removed"}
+
+
+class ResearchRequest(BaseModel):
+    question: str
+    task_type: str = "research"  # "research" -> Gemini, "fast" -> Groq
+
+
+@app.post("/research")
+async def ask_research(req: ResearchRequest):
+    """Research Engine v0.1 — a real question through the AI Gateway,
+    with the finding persisted to the database. This is the smallest
+    possible real slice of the Research Engine described in the spec:
+    later phases add source retrieval, hypothesis tracking, and
+    experiment linkage on top of this."""
+    try:
+        result = await ai_gateway.generate(req.question, req.task_type)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+
+    if SessionLocal:
+        async with SessionLocal() as session:
+            record = ResearchFinding(question=req.question, finding=result.text, provider=result.provider)
+            session.add(record)
+            await session.commit()
+
+    return {"question": req.question, "finding": result.text, "provider": result.provider, "model": result.model}
+
+
+@app.get("/research/history")
+async def research_history(limit: int = 20):
+    if not SessionLocal:
+        raise HTTPException(400, "database not configured")
+    async with SessionLocal() as session:
+        rows = (await session.execute(
+            select(ResearchFinding).order_by(ResearchFinding.id.desc()).limit(limit)
+        )).scalars().all()
+        return [
+            {"id": r.id, "question": r.question, "finding": r.finding,
+             "provider": r.provider, "created_at": r.created_at.isoformat()}
+            for r in rows
+        ]
 
 
 @app.get("/{broker_name}/account")
