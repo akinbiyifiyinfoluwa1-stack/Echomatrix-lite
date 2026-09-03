@@ -42,9 +42,10 @@ class AIGateway:
 
     def status(self) -> dict:
         gemini_key, groq_key = self._load_keys()
+        stored = creds_store.get_all()
         return {
-            "gemini": {"configured": bool(gemini_key)},
-            "groq": {"configured": bool(groq_key)},
+            "gemini": {"configured": bool(gemini_key), "connected": bool((stored.get("gemini") or {}).get("verified"))},
+            "groq": {"configured": bool(groq_key), "connected": bool((stored.get("groq") or {}).get("verified"))},
         }
 
     async def generate(self, prompt: str, task_type: str = "research") -> AIResponse:
