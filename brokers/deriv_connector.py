@@ -47,14 +47,19 @@ class DerivConnector(BrokerConnector):
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._req_id = itertools.count(1)
         self._lock = asyncio.Lock()
+        self.last_error: str = ""
 
     async def connect(self) -> bool:
         try:
             self._ws = await websockets.connect(DERIV_WS_URL.format(app_id=self.app_id))
             resp = await self._call({"authorize": self.api_token})
-            return "error" not in resp
-        except Exception:
+            if "error" in resp:
+                self.last_error = resp["error"].get("message", "authorization rejected")
+                return False
+            return True
+        except Exception as e:
             self._ws = None
+            self.last_error = f"{type(e).__name__}: {e}"
             return False
 
     async def disconnect(self) -> None:
