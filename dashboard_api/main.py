@@ -167,8 +167,7 @@ async def save_deriv_credentials(req: DerivCredentials):
     connector, reason = await _connect_deriv(req.api_token, req.app_id)
     if not connector:
         creds_store.save("deriv", req.model_dump())
-        hint = " (App IDs must be a plain number from api.deriv.com \u2014 not the token itself)" if req.app_id and not req.app_id.isdigit() else ""
-        return {"connected": False, "message": f"saved, but couldn't connect — {reason}{hint}"}
+        return {"connected": False, "message": f"saved, but couldn't connect — {reason}"}
     if "deriv" in brokers:
         await brokers["deriv"].disconnect()
     _register_broker("deriv", connector)
