@@ -387,6 +387,7 @@ async function saveCredentials(broker, cardEl) {
   }
   msg.textContent = "Connecting...";
   msg.className = "msg";
+  let shouldRefresh = true;
   try {
     const resp = await fetch(`${broker.endpointBase}/${broker.id}`, {
       method: "POST",
@@ -400,15 +401,18 @@ async function saveCredentials(broker, cardEl) {
     } else if (resp.ok) {
       msg.textContent = "Saved, but couldn't connect: " + (data.message || "check your keys");
       msg.className = "msg err";
+      shouldRefresh = false; // keep the reason on screen until the next manual action
     } else {
       msg.textContent = data.detail || "Something went wrong.";
       msg.className = "msg err";
+      shouldRefresh = false;
     }
   } catch (e) {
     msg.textContent = "Network error — try again.";
     msg.className = "msg err";
+    shouldRefresh = false;
   }
-  loadStatus();
+  if (shouldRefresh) setTimeout(loadStatus, 2500);
 }
 
 async function removeCredentials(broker, cardEl) {
@@ -421,7 +425,7 @@ async function removeCredentials(broker, cardEl) {
     msg.textContent = "Couldn't remove — try again.";
     msg.className = "msg err";
   }
-  loadStatus();
+  setTimeout(loadStatus, 2000);
 }
 
 async function loadStatus() {
