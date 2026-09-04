@@ -83,7 +83,7 @@ class DerivConnector(BrokerConnector):
                 otp_resp.raise_for_status()
                 ws_url = otp_resp.json()["data"]["url"]
 
-            self._ws = await websockets.connect(ws_url)
+            self._ws = await websockets.connect(ws_url, ping_interval=None)
             return True
         except httpx.HTTPStatusError as e:
             self.last_error = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
@@ -104,15 +104,30 @@ class DerivConnector(BrokerConnector):
     async def _call(self, payload: dict) -> dict:
         """Send one request and wait for its matching response. The
         socket is a single shared channel, so calls are serialized
-        with a lock to keep req_id/response pairing simple."""
+        with a lock to keep req_id/response pairing simple.
+
+        If the WebSocket has dropped (idle timeout, network blip —
+        Deriv's OTP-scoped socket doesn't answer protocol-level pings,
+        so ping_interval is disabled above, but the connection can
+        still die on its own), reconnect the full REST+OTP+WS chain
+        once and retry, instead of failing forever on a dead socket."""
         async with self._lock:
-            req_id = next(self._req_id)
-            await self._ws.send(json.dumps({**payload, "req_id": req_id}))
-            while True:
-                raw = await self._ws.recv()
-                data = json.loads(raw)
-                if data.get("req_id") == req_id:
-                    return data
+            try:
+                return await self._send_and_wait(payload)
+            except (websockets.exceptions.ConnectionClosed, OSError) as e:
+                self.last_error = f"reconnecting after {type(e).__name__}: {e}"
+                if not await self.connect():
+                    raise RuntimeError(f"Deriv reconnect failed: {self.last_error}") from e
+                return await self._send_and_wait(payload)
+
+    async def _send_and_wait(self, payload: dict) -> dict:
+        req_id = next(self._req_id)
+        await self._ws.send(json.dumps({**payload, "req_id": req_id}))
+        while True:
+            raw = await self._ws.recv()
+            data = json.loads(raw)
+            if data.get("req_id") == req_id:
+                return data
 
     async def get_symbols(self) -> list[str]:
         resp = await self._call({"active_symbols": "brief"})
