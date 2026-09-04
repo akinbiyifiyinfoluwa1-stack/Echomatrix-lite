@@ -12,7 +12,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from brokers.base import BrokerConnector, OrderSide
+from brokers.base import BrokerConnector, OrderSide, OrderResult
 from strategies.quick_brain import QuickBrain, Signal, TrendReading
 from risk.risk_manager import RiskManager
 
@@ -62,7 +62,10 @@ class Scanner:
 
         return ranked
 
-    async def _execute_top(self, reading: TrendReading) -> None:
+    async def execute_signal(self, reading: TrendReading) -> OrderResult | None:
+        """Place a real order for one ranked signal. Public so both the
+        auto-trade loop and a manual 'trade this' tap use the exact same
+        path — no separate/looser logic for manual trades."""
         symbol_info = await self.broker.get_symbol_info(reading.symbol)
         side = OrderSide.BUY if reading.signal == Signal.BUY else OrderSide.SELL
         entry = symbol_info.ask if side == OrderSide.BUY else symbol_info.bid
@@ -78,13 +81,17 @@ class Scanner:
         )
         if not decision.allowed:
             logger.info(f"skip {reading.symbol}: {decision.reason}")
-            return
+            return None
 
         result = await self.broker.place_order(
             reading.symbol, side, decision.suggested_volume,
             sl=stop, comment=f"EchoMatrix QuickBrain {reading.strength}",
         )
         logger.info(f"{'executed' if result.success else 'failed'} {reading.symbol}: {result.message}")
+        return result
+
+    async def _execute_top(self, reading: TrendReading) -> None:
+        await self.execute_signal(reading)
 
     async def run_forever(self) -> None:
         self._running = True

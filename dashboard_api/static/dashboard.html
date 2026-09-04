@@ -276,9 +276,13 @@
       <button class="close-btn" id="run-scan-btn" style="color:var(--accent);border-color:var(--accent);">Scan Now</button>
     </div>
     <table id="scan-table">
-      <thead><tr><th>Symbol</th><th>Signal</th><th>Score</th></tr></thead>
-      <tbody><tr><td colspan="3" class="empty-row">Tap "Scan Now" to rank live opportunities</td></tr></tbody>
+      <thead><tr><th>Symbol</th><th>Signal</th><th>Score</th><th></th></tr></thead>
+      <tbody><tr><td colspan="4" class="empty-row">Tap "Scan Now" to rank live opportunities</td></tr></tbody>
     </table>
+    <div class="btn-row" style="margin-top:14px;">
+      <button class="btn-save" id="auto-trade-btn">Start Auto-Trading</button>
+    </div>
+    <div class="msg" id="auto-trade-msg">Off — trades only happen when you tap "Trade" on a signal above.</div>
   </div>
 </div>
 
@@ -502,6 +506,7 @@ function updateLiveDashboard(statusBrokers) {
     currentBroker = select.value;
     refreshAccount();
     refreshPositions();
+    refreshAutoTradeStatus();
   }
 }
 
@@ -509,6 +514,7 @@ document.getElementById("live-broker-select").addEventListener("change", (e) => 
   currentBroker = e.target.value;
   refreshAccount();
   refreshPositions();
+  refreshAutoTradeStatus();
 });
 
 async function refreshAccount() {
@@ -631,12 +637,12 @@ function drawChart(candles, symbol) {
 document.getElementById("run-scan-btn").addEventListener("click", async () => {
   if (!currentBroker) return;
   const tbody = document.querySelector("#scan-table tbody");
-  tbody.innerHTML = `<tr><td colspan="3" class="empty-row">Scanning...</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="4" class="empty-row">Scanning...</td></tr>`;
   try {
     const resp = await fetch(`/${currentBroker}/scan`, { method: "POST" });
     const ranked = await resp.json();
     if (!ranked.length) {
-      tbody.innerHTML = `<tr><td colspan="3" class="empty-row">No signals found this pass</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="4" class="empty-row">No signals found this pass</td></tr>`;
       return;
     }
     tbody.innerHTML = ranked.map(r => `
@@ -644,11 +650,76 @@ document.getElementById("run-scan-btn").addEventListener("click", async () => {
         <td>${r.symbol}</td>
         <td class="${r.signal === 'buy' ? 'pill-buy' : r.signal === 'sell' ? 'pill-sell' : ''}">${r.signal}</td>
         <td class="signal-score">${Math.round(r.strength)}</td>
+        <td>${r.signal === 'buy' || r.signal === 'sell'
+              ? `<button class="close-btn trade-btn" data-symbol="${r.symbol}" style="color:var(--ok);border-color:var(--ok);">Trade</button>`
+              : ""}</td>
       </tr>
     `).join("");
+    tbody.querySelectorAll(".trade-btn").forEach(btn => {
+      btn.addEventListener("click", () => executeTrade(btn));
+    });
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="3" class="empty-row">Scan failed</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" class="empty-row">Scan failed</td></tr>`;
   }
+});
+
+async function executeTrade(btn) {
+  const symbol = btn.dataset.symbol;
+  const original = btn.textContent;
+  btn.textContent = "Placing...";
+  btn.disabled = true;
+  try {
+    const resp = await fetch(`/${currentBroker}/scan/execute/${symbol}`, { method: "POST" });
+    const data = await resp.json();
+    if (resp.ok && data.success) {
+      btn.textContent = "Placed ✓";
+      setTimeout(refreshPositions, 1500);
+    } else {
+      btn.textContent = "Failed";
+      alert(data.detail || data.message || "Trade could not be placed.");
+      btn.disabled = false;
+    }
+  } catch (e) {
+    btn.textContent = "Failed";
+    alert("Network error — try again.");
+    btn.disabled = false;
+  }
+}
+
+let autoTradeOn = false;
+
+async function refreshAutoTradeStatus() {
+  if (!currentBroker) return;
+  try {
+    const resp = await fetch(`/${currentBroker}/scan/status`);
+    const data = await resp.json();
+    autoTradeOn = data.running && data.auto_execute;
+    const btn = document.getElementById("auto-trade-btn");
+    const msg = document.getElementById("auto-trade-msg");
+    btn.textContent = autoTradeOn ? "Stop Auto-Trading" : "Start Auto-Trading";
+    msg.textContent = autoTradeOn
+      ? `On — scanning every ${data.interval_seconds}s and placing trades automatically on strong signals.`
+      : "Off — trades only happen when you tap \"Trade\" on a signal above.";
+  } catch (e) {
+    // leave last-known state on screen
+  }
+}
+
+document.getElementById("auto-trade-btn").addEventListener("click", async () => {
+  if (!currentBroker) return;
+  const btn = document.getElementById("auto-trade-btn");
+  btn.disabled = true;
+  try {
+    if (autoTradeOn) {
+      await fetch(`/${currentBroker}/scan/stop`, { method: "POST" });
+    } else {
+      await fetch(`/${currentBroker}/scan/start?auto_execute=true`, { method: "POST" });
+    }
+  } catch (e) {
+    alert("Network error — try again.");
+  }
+  btn.disabled = false;
+  refreshAutoTradeStatus();
 });
 
 document.getElementById("research-btn").addEventListener("click", async () => {

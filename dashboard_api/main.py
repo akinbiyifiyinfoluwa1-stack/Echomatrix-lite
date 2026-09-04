@@ -339,6 +339,32 @@ async def last_scan(broker_name: str):
     return [r.__dict__ for r in get_scanner(broker_name).last_readings]
 
 
+@app.post("/{broker_name}/scan/execute/{symbol}")
+async def execute_scanned_signal(broker_name: str, symbol: str):
+    """Manually trigger a real trade for one ranked signal from the last
+    scan — same execution path (risk check + order) the auto-trade loop
+    uses, just fired by a tap instead of automatically."""
+    scanner = get_scanner(broker_name)
+    reading = next((r for r in scanner.last_readings if r.symbol == symbol), None)
+    if not reading:
+        raise HTTPException(404, f"no recent scan reading for {symbol} — run a scan first")
+    result = await scanner.execute_signal(reading)
+    if result is None:
+        raise HTTPException(400, "risk check declined this trade (see server logs for reason)")
+    if not result.success:
+        raise HTTPException(400, result.message)
+    return result
+
+
+@app.get("/{broker_name}/scan/status")
+async def scan_status(broker_name: str):
+    scanner = get_scanner(broker_name)
+    task = _scan_tasks.get(broker_name)
+    running = bool(task and not task.done())
+    return {"running": running, "auto_execute": scanner.config.auto_execute,
+            "interval_seconds": scanner.config.scan_interval_seconds}
+
+
 @app.post("/{broker_name}/scan/start")
 async def start_scan_loop(broker_name: str, auto_execute: bool = False):
     """Start the continuous background scan loop for this broker.
