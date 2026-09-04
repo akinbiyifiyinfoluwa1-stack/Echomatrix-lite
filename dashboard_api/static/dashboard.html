@@ -284,6 +284,17 @@
     </div>
     <div class="msg" id="auto-trade-msg">Off — trades only happen when you tap "Trade" on a signal above.</div>
   </div>
+
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">Trade History</div>
+      <button class="close-btn" id="refresh-history-btn" style="color:var(--muted);border-color:var(--border);">Refresh</button>
+    </div>
+    <table id="history-table">
+      <thead><tr><th>Symbol</th><th>Side</th><th>By</th><th>Result</th></tr></thead>
+      <tbody><tr><td colspan="4" class="empty-row">No trades yet</td></tr></tbody>
+    </table>
+  </div>
 </div>
 
 <div class="section-title">Brokers</div>
@@ -674,6 +685,7 @@ async function executeTrade(btn) {
     if (resp.ok && data.success) {
       btn.textContent = "Placed ✓";
       setTimeout(refreshPositions, 1500);
+      setTimeout(loadTradeHistory, 1500);
     } else {
       btn.textContent = "Failed";
       alert(data.detail || data.message || "Trade could not be placed.");
@@ -744,7 +756,32 @@ document.getElementById("research-btn").addEventListener("click", async () => {
   }
 });
 
+async function loadTradeHistory() {
+  const tbody = document.querySelector("#history-table tbody");
+  try {
+    const resp = await fetch("/trades/history?limit=30");
+    const rows = await resp.json();
+    if (!resp.ok || !rows.length) {
+      tbody.innerHTML = `<tr><td colspan="4" class="empty-row">No trades yet</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td>${r.symbol}</td>
+        <td class="${r.side === 'buy' ? 'pill-buy' : 'pill-sell'}">${r.side}</td>
+        <td>${r.triggered_by}</td>
+        <td style="color:${r.success ? 'var(--ok)' : 'var(--danger)'}">${r.success ? 'placed' : 'declined'}</td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="empty-row">Couldn't load history</td></tr>`;
+  }
+}
+
+document.getElementById("refresh-history-btn").addEventListener("click", loadTradeHistory);
+
 loadStatus();
+loadTradeHistory();
 </script>
 
 </body>

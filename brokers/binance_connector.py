@@ -17,8 +17,10 @@ from brokers.base import (
 
 try:
     from binance import AsyncClient
+    from binance.exceptions import BinanceAPIException
 except ImportError:
     AsyncClient = None
+    BinanceAPIException = Exception
 
 
 class BinanceConnector(BrokerConnector):
@@ -29,6 +31,7 @@ class BinanceConnector(BrokerConnector):
         self.api_secret = api_secret
         self.testnet = testnet
         self.client: Optional["AsyncClient"] = None
+        self.last_error: str = ""
 
     async def connect(self) -> bool:
         if AsyncClient is None:
@@ -37,8 +40,23 @@ class BinanceConnector(BrokerConnector):
             self.client = await AsyncClient.create(
                 self.api_key, self.api_secret, testnet=self.testnet
             )
+            # AsyncClient.create() only pings the server unsigned — it
+            # succeeds even with a wrong/garbage key or secret. Do one
+            # signed call here so a bad credential is caught now, not
+            # silently on every later request.
+            await self.client.get_account()
             return True
-        except Exception:
+        except BinanceAPIException as e:
+            self.last_error = (
+                f"Binance rejected these credentials (code {e.code}): {e.message}. "
+                f"Double-check the API Key/Secret for typos or extra spaces, and that "
+                f"{'Testnet' if self.testnet else 'Live'} is the right toggle for these keys "
+                f"(testnet and live keys are not interchangeable)."
+            )
+            self.client = None
+            return False
+        except Exception as e:
+            self.last_error = f"{type(e).__name__}: {e}"
             self.client = None
             return False
 
@@ -49,6 +67,28 @@ class BinanceConnector(BrokerConnector):
 
     async def is_connected(self) -> bool:
         return self.client is not None
+
+    async def _reconnect(self) -> None:
+        if self.client:
+            try:
+                await self.client.close_connection()
+            except Exception:
+                pass
+        self.client = await AsyncClient.create(self.api_key, self.api_secret, testnet=self.testnet)
+
+    async def _signed(self, call):
+        """Run one signed call; on a signature/timestamp error, reconnect
+        once (this refreshes python-binance's cached server-time offset,
+        which is the usual cause when a client that connected fine starts
+        failing signed calls later — the offset silently goes stale) and
+        retry exactly once before giving up."""
+        try:
+            return await call()
+        except BinanceAPIException as e:
+            if e.code in (-1021, -1022):
+                await self._reconnect()
+                return await call()
+            raise
 
     async def get_symbols(self) -> list[str]:
         info = await self.client.get_exchange_info()
@@ -72,7 +112,7 @@ class BinanceConnector(BrokerConnector):
         )
 
     async def get_account_info(self) -> AccountInfo:
-        acc = await self.client.get_account()
+        acc = await self._signed(lambda: self.client.get_account())
         usdt = next((b for b in acc["balances"] if b["asset"] == "USDT"), None)
         balance = float(usdt["free"]) + float(usdt["locked"]) if usdt else 0.0
         return AccountInfo(
@@ -83,7 +123,7 @@ class BinanceConnector(BrokerConnector):
     async def get_positions(self) -> list[Position]:
         # Spot account: treat non-zero balances as "positions".
         # For futures, swap this to get_position_risk() on a futures client.
-        acc = await self.client.get_account()
+        acc = await self._signed(lambda: self.client.get_account())
         positions = []
         for b in acc["balances"]:
             qty = float(b["free"]) + float(b["locked"])
@@ -102,21 +142,21 @@ class BinanceConnector(BrokerConnector):
     ) -> OrderResult:
         try:
             if order_type == OrderType.MARKET:
-                order = await self.client.create_order(
+                order = await self._signed(lambda: self.client.create_order(
                     symbol=symbol,
                     side="BUY" if side == OrderSide.BUY else "SELL",
                     type="MARKET",
                     quantity=volume,
-                )
+                ))
             else:
-                order = await self.client.create_order(
+                order = await self._signed(lambda: self.client.create_order(
                     symbol=symbol,
                     side="BUY" if side == OrderSide.BUY else "SELL",
                     type="LIMIT",
                     timeInForce="GTC",
                     quantity=volume,
                     price=str(price),
-                )
+                ))
             fills = order.get("fills", [])
             fill_price = float(fills[0]["price"]) if fills else price
             return OrderResult(success=True, order_id=str(order["orderId"]),

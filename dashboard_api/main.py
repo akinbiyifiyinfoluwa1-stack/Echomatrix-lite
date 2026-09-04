@@ -29,11 +29,21 @@ from strategies.quick_brain import QuickBrain
 from core.scanner import Scanner, ScannerConfig
 from storage import credentials_store as creds_store
 from db.database import init_db, SessionLocal
-from db.models import ResearchFinding
+from db.models import ResearchFinding, TradeExecution
 from ai_gateway.gateway import gateway as ai_gateway
 
 logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="EchoMatrix Lite Engine", version="0.3.0")
+
+
+@app.exception_handler(Exception)
+async def clean_error_handler(request, exc: Exception):
+    """Any exception that escapes a route handler lands here instead of
+    as a raw traceback in the HTTP response — logs still get the full
+    trace, the client just gets a readable one-line message."""
+    from fastapi.responses import JSONResponse
+    logging.getLogger("echomatrix").exception(f"unhandled error on {request.url.path}")
+    return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc}"})
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -52,9 +62,10 @@ def _register_broker(name: str, connector: BrokerConnector) -> None:
     scanners[name] = Scanner(connector, brain, risk_manager, ScannerConfig())
 
 
-async def _connect_binance(api_key: str, api_secret: str, testnet: bool) -> Optional[BinanceConnector]:
+async def _connect_binance(api_key: str, api_secret: str, testnet: bool) -> tuple[Optional[BinanceConnector], str]:
     connector = BinanceConnector(api_key, api_secret, testnet=testnet)
-    return connector if await connector.connect() else None
+    ok = await connector.connect()
+    return (connector, "") if ok else (None, connector.last_error)
 
 
 async def _connect_deriv(api_token: str, app_id: str, use_demo: bool = True) -> tuple[Optional[DerivConnector], str]:
@@ -76,7 +87,7 @@ async def startup():
     b_testnet_raw = os.getenv("BINANCE_TESTNET")
     b_testnet = (b_testnet_raw == "true") if b_testnet_raw is not None else (stored.get("binance") or {}).get("testnet", True)
     if b_key and b_secret:
-        binance = await _connect_binance(b_key, b_secret, b_testnet)
+        binance, _ = await _connect_binance(b_key, b_secret, b_testnet)
         if binance:
             _register_broker("binance", binance)
 
@@ -158,10 +169,10 @@ class DerivCredentials(BaseModel):
 
 @app.post("/api/credentials/binance")
 async def save_binance_credentials(req: BinanceCredentials):
-    connector = await _connect_binance(req.api_key, req.api_secret, req.testnet)
+    connector, reason = await _connect_binance(req.api_key, req.api_secret, req.testnet)
     if not connector:
         creds_store.save("binance", req.model_dump())
-        return {"connected": False, "message": "saved, but couldn't connect — check the key/secret"}
+        return {"connected": False, "message": f"saved, but couldn't connect — {reason}"}
     if "binance" in brokers:
         await brokers["binance"].disconnect()
     _register_broker("binance", connector)
@@ -250,6 +261,26 @@ async def research_history(limit: int = 20):
         return [
             {"id": r.id, "question": r.question, "finding": r.finding,
              "provider": r.provider, "created_at": r.created_at.isoformat()}
+            for r in rows
+        ]
+
+
+@app.get("/trades/history")
+async def trade_history(limit: int = 30):
+    """Every real order EchoMatrix has attempted — manual or auto-traded,
+    successful or risk-declined — independent of broker UI."""
+    if not SessionLocal:
+        raise HTTPException(400, "database not configured")
+    async with SessionLocal() as session:
+        rows = (await session.execute(
+            select(TradeExecution).order_by(TradeExecution.id.desc()).limit(limit)
+        )).scalars().all()
+        return [
+            {"id": r.id, "broker": r.broker, "symbol": r.symbol, "side": r.side,
+             "volume": r.volume, "entry_price": r.entry_price, "stop_loss": r.stop_loss,
+             "signal_strength": r.signal_strength, "triggered_by": r.triggered_by,
+             "order_id": r.order_id, "success": r.success, "message": r.message,
+             "created_at": r.created_at.isoformat()}
             for r in rows
         ]
 
@@ -348,7 +379,7 @@ async def execute_scanned_signal(broker_name: str, symbol: str):
     reading = next((r for r in scanner.last_readings if r.symbol == symbol), None)
     if not reading:
         raise HTTPException(404, f"no recent scan reading for {symbol} — run a scan first")
-    result = await scanner.execute_signal(reading)
+    result = await scanner.execute_signal(reading, triggered_by="manual")
     if result is None:
         raise HTTPException(400, "risk check declined this trade (see server logs for reason)")
     if not result.success:

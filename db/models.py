@@ -57,6 +57,28 @@ class ResearchFinding(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class TradeExecution(Base):
+    """Trade Journal — every real order EchoMatrix has placed, manual or
+    auto-traded, with the signal that triggered it and the outcome.
+    This is the ground truth of what actually happened, independent of
+    whatever the broker's own UI shows."""
+    __tablename__ = "trade_executions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    broker: Mapped[str] = mapped_column(String(32))
+    symbol: Mapped[str] = mapped_column(String(32))
+    side: Mapped[str] = mapped_column(String(8))
+    volume: Mapped[float] = mapped_column(Float)
+    entry_price: Mapped[float] = mapped_column(Float, default=0)
+    stop_loss: Mapped[float] = mapped_column(Float, default=0)
+    signal_strength: Mapped[float] = mapped_column(Float, default=0)
+    triggered_by: Mapped[str] = mapped_column(String(16), default="auto")  # auto | manual
+    order_id: Mapped[str] = mapped_column(String(64), default="")
+    success: Mapped[bool] = mapped_column(default=False)
+    message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class MemoryEpisode(Base):
     """Episodic Memory — situation -> decision -> outcome -> lesson."""
     __tablename__ = "memory_episodes"

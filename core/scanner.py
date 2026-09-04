@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from brokers.base import BrokerConnector, OrderSide, OrderResult
 from strategies.quick_brain import QuickBrain, Signal, TrendReading
 from risk.risk_manager import RiskManager
+from db.database import SessionLocal
+from db.models import TradeExecution
 
 logger = logging.getLogger("echomatrix.scanner")
 
@@ -62,10 +64,30 @@ class Scanner:
 
         return ranked
 
-    async def execute_signal(self, reading: TrendReading) -> OrderResult | None:
+    async def _log_trade(self, symbol: str, side: str, volume: float, entry: float,
+                          stop: float, strength: float, triggered_by: str,
+                          success: bool, message: str, order_id: str = "") -> None:
+        """Best-effort trade journal write — never let a logging failure
+        interfere with the actual trade that already happened."""
+        if not SessionLocal:
+            return
+        try:
+            async with SessionLocal() as session:
+                session.add(TradeExecution(
+                    broker=self.broker.name, symbol=symbol, side=side, volume=volume,
+                    entry_price=entry, stop_loss=stop, signal_strength=strength,
+                    triggered_by=triggered_by, order_id=order_id,
+                    success=success, message=message,
+                ))
+                await session.commit()
+        except Exception as e:
+            logger.warning(f"trade journal write failed (trade itself was not affected): {e}")
+
+    async def execute_signal(self, reading: TrendReading, triggered_by: str = "auto") -> OrderResult | None:
         """Place a real order for one ranked signal. Public so both the
         auto-trade loop and a manual 'trade this' tap use the exact same
-        path — no separate/looser logic for manual trades."""
+        path — no separate/looser logic for manual trades. Every attempt,
+        successful or not, is written to the trade journal."""
         symbol_info = await self.broker.get_symbol_info(reading.symbol)
         side = OrderSide.BUY if reading.signal == Signal.BUY else OrderSide.SELL
         entry = symbol_info.ask if side == OrderSide.BUY else symbol_info.bid
@@ -81,6 +103,11 @@ class Scanner:
         )
         if not decision.allowed:
             logger.info(f"skip {reading.symbol}: {decision.reason}")
+            await self._log_trade(
+                reading.symbol, side.value, symbol_info.min_volume, entry, stop,
+                reading.strength, triggered_by, success=False,
+                message=f"risk check declined: {decision.reason}",
+            )
             return None
 
         result = await self.broker.place_order(
@@ -88,6 +115,11 @@ class Scanner:
             sl=stop, comment=f"EchoMatrix QuickBrain {reading.strength}",
         )
         logger.info(f"{'executed' if result.success else 'failed'} {reading.symbol}: {result.message}")
+        await self._log_trade(
+            reading.symbol, side.value, decision.suggested_volume, entry, stop,
+            reading.strength, triggered_by, success=result.success,
+            message=result.message, order_id=result.order_id or "",
+        )
         return result
 
     async def _execute_top(self, reading: TrendReading) -> None:
