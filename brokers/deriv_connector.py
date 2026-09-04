@@ -119,6 +119,16 @@ class DerivConnector(BrokerConnector):
         return [s["underlying_symbol"] for s in resp.get("active_symbols", [])
                 if s.get("market") in ("forex", "commodities")]
 
+    async def get_market_summary(self) -> dict:
+        """Diagnostic: what markets/symbols this account actually has access to."""
+        resp = await self._call({"active_symbols": "brief"})
+        symbols = resp.get("active_symbols", [])
+        by_market: dict[str, list[str]] = {}
+        for s in symbols:
+            by_market.setdefault(s.get("market", "unknown"), []).append(s.get("underlying_symbol", ""))
+        return {"total": len(symbols), "by_market": {k: len(v) for k, v in by_market.items()},
+                "sample": {k: v[:5] for k, v in by_market.items()}}
+
     async def get_symbol_info(self, symbol: str) -> SymbolInfo:
         resp = await self._call({"ticks": symbol})
         tick = resp.get("tick", {})

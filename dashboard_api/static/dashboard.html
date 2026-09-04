@@ -112,6 +112,13 @@
   }
   .msg.ok { color: var(--ok); }
   .msg.err { color: var(--danger); }
+  .markets-summary {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255,255,255,0.08);
+  }
   .footer-note {
     color: var(--muted);
     font-size: 12px;
@@ -368,13 +375,30 @@ function renderCard(broker, status) {
       ${st.configured ? `<button class="btn-remove">Remove</button>` : ""}
     </div>
     <div class="msg"></div>
+    ${st.connected ? `<div class="markets-summary" id="${broker.id}-markets"></div>` : ""}
   `;
 
   div.querySelector(".btn-save").addEventListener("click", () => saveCredentials(broker, div));
   const removeBtn = div.querySelector(".btn-remove");
   if (removeBtn) removeBtn.addEventListener("click", () => removeCredentials(broker, div));
 
+  if (st.connected) loadMarketsSummary(broker.id);
+
   return div;
+}
+
+async function loadMarketsSummary(brokerId) {
+  const el = document.getElementById(`${brokerId}-markets`);
+  if (!el) return;
+  try {
+    const resp = await fetch(`/${brokerId}/markets`);
+    const data = await resp.json();
+    if (data.error || !data.by_market) return; // broker doesn't support this diagnostic — stay quiet
+    const parts = Object.entries(data.by_market).map(([market, count]) => `${market}: ${count}`);
+    el.textContent = `Markets available on this account — ${parts.join(" · ")}`;
+  } catch (e) {
+    // silent — this is a nice-to-have diagnostic, not critical
+  }
 }
 
 async function saveCredentials(broker, cardEl) {

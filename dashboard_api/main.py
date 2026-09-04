@@ -261,6 +261,16 @@ async def symbols(broker_name: str):
     return await get_broker(broker_name).get_symbols()
 
 
+@app.get("/{broker_name}/markets")
+async def markets(broker_name: str):
+    """Diagnostic: what markets/symbols this account actually has access to
+    (get_symbols() only returns forex/commodities, which can be empty)."""
+    broker = get_broker(broker_name)
+    if not hasattr(broker, "get_market_summary"):
+        return {"error": f"{broker_name} does not support a market summary"}
+    return await broker.get_market_summary()
+
+
 @app.get("/{broker_name}/symbols/{symbol}")
 async def symbol_info(broker_name: str, symbol: str):
     return await get_broker(broker_name).get_symbol_info(symbol)
