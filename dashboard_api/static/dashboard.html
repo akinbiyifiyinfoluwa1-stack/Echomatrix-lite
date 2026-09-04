@@ -315,6 +315,7 @@ const brokers = [
       { key: "api_token", label: "API Token", type: "password" },
       { key: "app_id", label: "App ID (leave as 1089 if unsure)", type: "text", placeholder: "1089" },
     ],
+    toggle: { key: "use_demo", label: "Use Demo account (practice funds)" },
   },
 ];
 
@@ -348,7 +349,7 @@ function renderCard(broker, status) {
 
   const toggleHtml = broker.toggle ? `
     <div class="toggle-row">
-      <input type="checkbox" id="${broker.id}-${broker.toggle.key}" ${st.configured && st.testnet !== false ? "checked" : ""} />
+      <input type="checkbox" id="${broker.id}-${broker.toggle.key}" ${st[broker.toggle.key] !== false ? "checked" : ""} />
       <label for="${broker.id}-${broker.toggle.key}" style="margin:0;">${broker.toggle.label}</label>
     </div>
   ` : "";

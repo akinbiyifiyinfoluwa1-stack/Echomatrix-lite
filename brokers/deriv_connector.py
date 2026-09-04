@@ -1,25 +1,34 @@
 """
-EchoMatrix — Deriv connector (lite build).
+EchoMatrix — Deriv connector (rebuilt for Deriv's current API).
 
-Pure WebSocket API — no terminal, no native install, runs anywhere.
-Deriv issues real API tokens and works from Nigeria (unlike OANDA,
-which does not), so it replaces OANDA as the forex/gold connector.
-Binance is unchanged.
+Deriv restructured their API after this code was first written:
+previously a single WebSocket at ws.derivws.com/websockets/v3?app_id=X
+authorized with a raw `authorize` message. As of the current API
+(verified against Deriv's published schemas.zip, Sept 2026):
 
-Deriv doesn't expose classic broker "positions" over its public API.
-API-side leveraged trading is done via Multiplier contracts (MULTUP /
-MULTDOWN): you buy to open, sell to close, and the contract carries
-live P/L while open. This connector maps BrokerConnector's
-Position/Order model onto Multiplier contracts.
+  1. REST: GET  /trading/v1/options/accounts        -> list accounts
+  2. REST: POST /trading/v1/options/accounts/{id}/otp -> one-time WS URL
+  3. WS:   connect directly to the returned URL (OTP is embedded,
+           no separate authorize step)
 
-Install: pip install websockets
-Docs: https://developers.deriv.com/docs/websockets
+REST calls need a `Deriv-App-ID` header + `Authorization: Bearer <token>`.
+Trading messages over the WebSocket (buy/sell/portfolio/ticks_history/
+active_symbols) are otherwise close to the classic protocol, with one
+notable rename: `symbol` -> `underlying_symbol` in buy parameters and
+active_symbols results.
+
+Trading itself still uses Multiplier contracts (MULTUP/MULTDOWN) to
+approximate a leveraged forex/commodity position, same as before.
+
+Install: pip install websockets httpx
+Docs: https://developers.deriv.com/docs/intro/api-overview/
 """
 
 import asyncio
 import itertools
 import json
 from typing import Optional
+import httpx
 import websockets
 
 from brokers.base import (
@@ -27,39 +36,61 @@ from brokers.base import (
     OrderSide, OrderType,
 )
 
-DERIV_WS_URL = "wss://ws.derivws.com/websockets/v3?app_id={app_id}"
+REST_BASE = "https://api.derivws.com"
 
 GRANULARITY_MAP = {
     "M1": 60, "M5": 300, "M15": 900, "M30": 1800,
     "H1": 3600, "H4": 14400, "D1": 86400,
 }
 
-DEFAULT_MULTIPLIER = 100  # leverage used when opening MULTUP/MULTDOWN contracts
+DEFAULT_MULTIPLIER = 100
 
 
 class DerivConnector(BrokerConnector):
     name = "deriv"
 
-    def __init__(self, api_token: str, app_id: str = "1089", multiplier: int = DEFAULT_MULTIPLIER):
+    def __init__(self, api_token: str, app_id: str = "1089", multiplier: int = DEFAULT_MULTIPLIER, use_demo: bool = True):
         self.api_token = api_token
         self.app_id = app_id
         self.multiplier = multiplier
+        self.use_demo = use_demo
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._req_id = itertools.count(1)
         self._lock = asyncio.Lock()
         self.last_error: str = ""
+        self.account_id: Optional[str] = None
+        self.currency: str = "USD"
 
     async def connect(self) -> bool:
+        headers = {"Deriv-App-ID": self.app_id, "Authorization": f"Bearer {self.api_token}"}
         try:
-            self._ws = await websockets.connect(DERIV_WS_URL.format(app_id=self.app_id))
-            resp = await self._call({"authorize": self.api_token})
-            if "error" in resp:
-                self.last_error = resp["error"].get("message", "authorization rejected")
-                return False
+            async with httpx.AsyncClient(timeout=15) as client:
+                accts_resp = await client.get(f"{REST_BASE}/trading/v1/options/accounts", headers=headers)
+                accts_resp.raise_for_status()
+                accounts = accts_resp.json().get("data", [])
+                if not accounts:
+                    self.last_error = "no Options trading accounts found on this token"
+                    return False
+
+                wanted_type = "demo" if self.use_demo else "real"
+                account = next((a for a in accounts if a.get("account_type") == wanted_type), accounts[0])
+                self.account_id = account["account_id"]
+                self.currency = account.get("currency", "USD")
+
+                otp_resp = await client.post(
+                    f"{REST_BASE}/trading/v1/options/accounts/{self.account_id}/otp", headers=headers
+                )
+                otp_resp.raise_for_status()
+                ws_url = otp_resp.json()["data"]["url"]
+
+            self._ws = await websockets.connect(ws_url)
             return True
+        except httpx.HTTPStatusError as e:
+            self.last_error = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+            return False
         except Exception as e:
-            self._ws = None
             self.last_error = f"{type(e).__name__}: {e}"
+            self._ws = None
             return False
 
     async def disconnect(self) -> None:
@@ -84,19 +115,17 @@ class DerivConnector(BrokerConnector):
                     return data
 
     async def get_symbols(self) -> list[str]:
-        resp = await self._call({"active_symbols": "brief", "product_type": "basic"})
-        return [s["symbol"] for s in resp.get("active_symbols", [])
+        resp = await self._call({"active_symbols": "brief"})
+        return [s["underlying_symbol"] for s in resp.get("active_symbols", [])
                 if s.get("market") in ("forex", "commodities")]
 
     async def get_symbol_info(self, symbol: str) -> SymbolInfo:
         resp = await self._call({"ticks": symbol})
         tick = resp.get("tick", {})
-        price = float(tick.get("quote", 0))
-        # Deriv's tick feed is single-price; approximate a tight spread
-        # since Multiplier contracts price off it.
-        spread = price * 0.0002
+        bid = float(tick.get("bid", tick.get("quote", 0)))
+        ask = float(tick.get("ask", tick.get("quote", 0)))
         return SymbolInfo(
-            symbol=symbol, bid=price - spread / 2, ask=price + spread / 2,
+            symbol=symbol, bid=bid, ask=ask,
             point=0.00001, min_volume=1.0, volume_step=1.0, contract_size=1.0,
         )
 
@@ -105,12 +134,14 @@ class DerivConnector(BrokerConnector):
         b = resp.get("balance", {})
         balance = float(b.get("balance", 0))
         portfolio = await self._call({"portfolio": 1})
-        equity = balance + sum(
-            float(c.get("profit", 0)) for c in portfolio.get("portfolio", {}).get("contracts", [])
-        )
+        contracts = portfolio.get("portfolio", {}).get("contracts", [])
+        profit_total = 0.0
+        for c in contracts:
+            poc = await self._call({"proposal_open_contract": 1, "contract_id": c["contract_id"]})
+            profit_total += float(poc.get("proposal_open_contract", {}).get("profit", 0))
         return AccountInfo(
-            balance=balance, equity=equity, margin=0.0,
-            free_margin=balance, currency=b.get("currency", "USD"),
+            balance=balance, equity=balance + profit_total, margin=0.0,
+            free_margin=balance, currency=b.get("currency", self.currency),
         )
 
     async def get_positions(self) -> list[Position]:
@@ -118,13 +149,15 @@ class DerivConnector(BrokerConnector):
         contracts = resp.get("portfolio", {}).get("contracts", [])
         result = []
         for c in contracts:
+            poc_resp = await self._call({"proposal_open_contract": 1, "contract_id": c["contract_id"]})
+            poc = poc_resp.get("proposal_open_contract", {})
             side = OrderSide.BUY if "MULTUP" in c.get("contract_type", "") else OrderSide.SELL
             result.append(Position(
-                id=str(c["contract_id"]), symbol=c.get("symbol", ""), side=side,
+                id=str(c["contract_id"]), symbol=poc.get("underlying", ""), side=side,
                 volume=float(c.get("payout", 0)) or 1.0,
                 open_price=float(c.get("buy_price", 0)),
-                current_price=float(c.get("bid_price", 0)),
-                profit=float(c.get("profit", 0)),
+                current_price=float(poc.get("bid_price", 0)),
+                profit=float(poc.get("profit", 0)),
             ))
         return result
 
@@ -137,7 +170,7 @@ class DerivConnector(BrokerConnector):
         contract_type = "MULTUP" if side == OrderSide.BUY else "MULTDOWN"
         parameters = {
             "amount": volume, "basis": "stake", "contract_type": contract_type,
-            "currency": "USD", "symbol": symbol, "multiplier": self.multiplier,
+            "currency": self.currency, "underlying_symbol": symbol, "multiplier": self.multiplier,
         }
         if sl or tp:
             limit_order = {}
@@ -147,13 +180,9 @@ class DerivConnector(BrokerConnector):
                 limit_order["take_profit"] = tp
             parameters["limit_order"] = limit_order
 
-        proposal = await self._call({"proposal": 1, **parameters})
-        if "error" in proposal:
-            return OrderResult(success=False, order_id=None, filled_price=None,
-                                message=proposal["error"].get("message", "proposal failed"))
-        buy_resp = await self._call({
-            "buy": proposal["proposal"]["id"], "price": proposal["proposal"]["ask_price"],
-        })
+        # Direct buy (no separate proposal step) — the schema allows
+        # `buy: 1` with parameters passed straight through.
+        buy_resp = await self._call({"buy": "1", "price": 0, "parameters": parameters})
         if "error" in buy_resp:
             return OrderResult(success=False, order_id=None, filled_price=None,
                                 message=buy_resp["error"].get("message", "buy failed"))

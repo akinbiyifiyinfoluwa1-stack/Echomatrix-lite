@@ -57,8 +57,8 @@ async def _connect_binance(api_key: str, api_secret: str, testnet: bool) -> Opti
     return connector if await connector.connect() else None
 
 
-async def _connect_deriv(api_token: str, app_id: str) -> tuple[Optional[DerivConnector], str]:
-    connector = DerivConnector(api_token, app_id=app_id or "1089")
+async def _connect_deriv(api_token: str, app_id: str, use_demo: bool = True) -> tuple[Optional[DerivConnector], str]:
+    connector = DerivConnector(api_token, app_id=app_id or "1089", use_demo=use_demo)
     ok = await connector.connect()
     return (connector, "") if ok else (None, connector.last_error)
 
@@ -83,8 +83,9 @@ async def startup():
     # Deriv — env vars first, then dashboard-saved credentials
     d_token = os.getenv("DERIV_API_TOKEN") or (stored.get("deriv") or {}).get("api_token")
     d_app_id = os.getenv("DERIV_APP_ID") or (stored.get("deriv") or {}).get("app_id") or "1089"
+    d_use_demo = (stored.get("deriv") or {}).get("use_demo", True)
     if d_token:
-        deriv, _ = await _connect_deriv(d_token, d_app_id)
+        deriv, _ = await _connect_deriv(d_token, d_app_id, d_use_demo)
         if deriv:
             _register_broker("deriv", deriv)
 
@@ -130,6 +131,8 @@ async def api_status():
         }
         if name == "binance" and saved:
             result[name]["testnet"] = saved.get("testnet", True)
+        if name == "deriv" and saved:
+            result[name]["use_demo"] = saved.get("use_demo", True)
     return {"brokers": result, "ai": ai_gateway.status(), "database": SessionLocal is not None}
 
 
@@ -147,6 +150,7 @@ class BinanceCredentials(BaseModel):
 class DerivCredentials(BaseModel):
     api_token: str
     app_id: str = "1089"
+    use_demo: bool = True
 
 
 @app.post("/api/credentials/binance")
@@ -164,7 +168,7 @@ async def save_binance_credentials(req: BinanceCredentials):
 
 @app.post("/api/credentials/deriv")
 async def save_deriv_credentials(req: DerivCredentials):
-    connector, reason = await _connect_deriv(req.api_token, req.app_id)
+    connector, reason = await _connect_deriv(req.api_token, req.app_id, req.use_demo)
     if not connector:
         creds_store.save("deriv", req.model_dump())
         return {"connected": False, "message": f"saved, but couldn't connect — {reason}"}
