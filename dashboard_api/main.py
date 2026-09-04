@@ -116,7 +116,10 @@ class OrderRequest(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    return FileResponse(STATIC_DIR / "dashboard.html")
+    return FileResponse(
+        STATIC_DIR / "dashboard.html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 @app.get("/api/status")
