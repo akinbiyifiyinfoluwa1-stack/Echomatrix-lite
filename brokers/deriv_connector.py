@@ -273,3 +273,42 @@ class DerivConnector(BrokerConnector):
              "low": float(c["low"]), "close": float(c["close"]), "volume": 0}
             for c in candles
         ]
+
+    async def get_historical_candles(self, symbol: str, timeframe: str, years_back: int = 5) -> list[dict]:
+        """Deriv has no single 'give me N years' call — page backward
+        with repeated ticks_history requests, moving the 'end' cursor to
+        just before the oldest candle received each time, until either
+        the target depth is reached or Deriv stops returning anything
+        older (not every instrument has deep history)."""
+        import time
+        granularity = GRANULARITY_MAP.get(timeframe, 3600)
+        cutoff = int(time.time()) - years_back * 365 * 86400
+        end_time = int(time.time())
+        seen_epochs: set[int] = set()
+        all_candles: list[dict] = []
+
+        while end_time > cutoff:
+            resp = await self._call({
+                "ticks_history": symbol, "end": end_time, "count": 5000,
+                "style": "candles", "granularity": granularity,
+            })
+            candles = resp.get("candles", [])
+            if not candles:
+                break
+            new_candles = [c for c in candles if c["epoch"] not in seen_epochs]
+            if not new_candles:
+                break
+            for c in new_candles:
+                seen_epochs.add(c["epoch"])
+            all_candles.extend(new_candles)
+
+            oldest = min(c["epoch"] for c in candles)
+            if oldest >= end_time:
+                break  # no progress — avoid looping forever on a flat response
+            end_time = oldest - granularity
+
+        return sorted([
+            {"time": c["epoch"], "open": float(c["open"]), "high": float(c["high"]),
+             "low": float(c["low"]), "close": float(c["close"]), "volume": 0}
+            for c in all_candles if c["epoch"] >= cutoff
+        ], key=lambda c: c["time"])

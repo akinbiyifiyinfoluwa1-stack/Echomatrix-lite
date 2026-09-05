@@ -11,6 +11,7 @@ place" actually happen instead of being separate parts.
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 
 from brokers.base import BrokerConnector, OrderSide, OrderResult
 from strategies.quick_brain import QuickBrain, Signal, TrendReading
@@ -157,12 +158,54 @@ class Scanner:
     async def _execute_top(self, reading: TrendReading) -> None:
         await self.execute_signal(reading)
 
+    def is_market_likely_closed(self) -> bool:
+        """Crypto (Binance) trades 24/7, so this only applies to Deriv's
+        forex/commodities — closed roughly Friday evening through Sunday
+        evening UTC. This is a simple weekday heuristic, not a real
+        per-symbol trading-hours lookup, so it can be off by a few hours
+        at the exact boundary — good enough to decide 'is it worth trying
+        a live scan right now' without needing a full sessions calendar."""
+        if self.broker.name != "deriv":
+            return False
+        return datetime.utcnow().weekday() in (5, 6)  # Saturday, Sunday
+
+    async def run_weekend_practice(self) -> None:
+        """Use closed-market downtime productively: backtest the exact
+        same strategy against whatever historical data is already
+        stored for this broker's symbols, instead of just idling until
+        markets reopen. Needs historical data to already be downloaded —
+        if none is stored yet for a symbol, that symbol just produces
+        zero trades and is skipped quietly."""
+        from core.backtest import run_backtest
+        try:
+            symbols = await self.broker.get_symbols()
+        except Exception as e:
+            logger.warning(f"weekend practice: couldn't list symbols: {e}")
+            return
+        for symbol in symbols[: self.config.max_symbols_per_scan]:
+            try:
+                result = await run_backtest(
+                    self.broker.name, symbol, self.config.timeframe,
+                    self.config.stop_atr_multiplier, self.config.reward_risk_ratio,
+                    self.config.min_signal_strength,
+                )
+                if result.trades > 0:
+                    logger.info(f"backtest {symbol}: {result.trades} trades, "
+                                f"{result.wins}W/{result.losses}L, {result.pnl_pct:+.2f}% total")
+            except Exception as e:
+                logger.warning(f"backtest failed for {symbol}: {e}")
+
     async def run_forever(self) -> None:
         self._running = True
         while self._running:
             try:
-                ranked = await self.scan_once()
-                logger.info(f"scan complete: {len(ranked)} actionable signals")
+                if self.is_market_likely_closed():
+                    logger.info(f"{self.broker.name}: market likely closed (weekend) — "
+                                f"running backtest practice instead of a live scan")
+                    await self.run_weekend_practice()
+                else:
+                    ranked = await self.scan_once()
+                    logger.info(f"scan complete: {len(ranked)} actionable signals")
             except Exception as e:
                 logger.error(f"scan cycle error: {e}")
             await asyncio.sleep(self.config.scan_interval_seconds)

@@ -13,9 +13,10 @@ Run: uvicorn dashboard_api.main:app --reload
 import os
 import asyncio
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -271,6 +272,59 @@ async def research_history(limit: int = 20):
         return [
             {"id": r.id, "question": r.question, "finding": r.finding,
              "provider": r.provider, "created_at": r.created_at.isoformat()}
+            for r in rows
+        ]
+
+
+@app.post("/{broker_name}/historical/download")
+async def download_historical(broker_name: str, symbol: str, timeframe: str = "H1", years: int = 5,
+                                background_tasks: BackgroundTasks = None):
+    """Kick off a real historical download for one symbol in the
+    background — years of 1h candles is a lot of data, so this returns
+    immediately rather than making the request wait. Check progress via
+    GET /historical/status."""
+    broker = get_broker(broker_name)
+    from core.historical import download_history
+    background_tasks.add_task(download_history, broker, symbol, timeframe, years)
+    return {"status": "started", "symbol": symbol, "timeframe": timeframe, "years": years}
+
+
+@app.get("/historical/status")
+async def historical_status(broker: str, symbol: str, timeframe: str = "H1"):
+    """How much history is actually stored for one symbol right now."""
+    if not SessionLocal:
+        raise HTTPException(400, "database not configured")
+    from db.models import MarketCandle
+    from sqlalchemy import func
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(func.count(MarketCandle.id), func.min(MarketCandle.time), func.max(MarketCandle.time))
+            .where(MarketCandle.broker == broker, MarketCandle.symbol == symbol,
+                   MarketCandle.timeframe == timeframe)
+        )
+        count, earliest, latest = result.one()
+    return {
+        "broker": broker, "symbol": symbol, "timeframe": timeframe, "candles_stored": count,
+        "earliest": datetime.fromtimestamp(earliest).isoformat() if earliest else None,
+        "latest": datetime.fromtimestamp(latest).isoformat() if latest else None,
+    }
+
+
+@app.get("/backtest/history")
+async def backtest_history(limit: int = 30):
+    """Recent backtest/weekend-practice runs — what the strategy would
+    have done against real stored history."""
+    if not SessionLocal:
+        raise HTTPException(400, "database not configured")
+    from db.models import BacktestRun
+    async with SessionLocal() as session:
+        rows = (await session.execute(
+            select(BacktestRun).order_by(BacktestRun.id.desc()).limit(limit)
+        )).scalars().all()
+        return [
+            {"id": r.id, "broker": r.broker, "symbol": r.symbol, "timeframe": r.timeframe,
+             "trades": r.trades, "wins": r.wins, "losses": r.losses, "pnl_pct": r.pnl_pct,
+             "created_at": r.created_at.isoformat()}
             for r in rows
         ]
 

@@ -244,3 +244,21 @@ class BinanceConnector(BrokerConnector):
              "low": float(k[3]), "close": float(k[4]), "volume": float(k[5])}
             for k in klines
         ]
+
+    async def get_historical_candles(self, symbol: str, timeframe: str, years_back: int = 5) -> list[dict]:
+        """Real history straight from Binance's own historical-klines
+        endpoint — python-binance paginates internally under the hood
+        for a range this size, so this one call can return years of
+        data without us managing the paging ourselves."""
+        interval_map = {
+            "M1": "1m", "M5": "5m", "M15": "15m", "M30": "30m",
+            "H1": "1h", "H4": "4h", "D1": "1d",
+        }
+        klines = await self.client.get_historical_klines(
+            symbol, interval_map.get(timeframe, "1h"), f"{years_back} years ago UTC",
+        )
+        return [
+            {"time": int(k[0] / 1000), "open": float(k[1]), "high": float(k[2]),
+             "low": float(k[3]), "close": float(k[4]), "volume": float(k[5])}
+            for k in klines
+        ]

@@ -22,6 +22,49 @@
 <div class="section-title">AI Providers</div>
 <div id="ai-cards"></div>
 
+<div class="section-title">Historical Data & Backtesting</div>
+<div class="card">
+  <div class="hint" style="padding-top:0;">
+    Download years of real candle history so the strategy has something
+    to practice against when live markets are closed (e.g. weekends for
+    forex/gold). Uses each broker's own historical API — no external
+    data source.
+  </div>
+  <label for="hist-broker">Broker</label>
+  <select id="hist-broker"></select>
+  <label for="hist-symbol">Symbol</label>
+  <input type="text" id="hist-symbol" placeholder="e.g. BTCUSDT or frxEURUSD" />
+  <div class="row-2">
+    <div>
+      <label for="hist-timeframe">Timeframe</label>
+      <select id="hist-timeframe">
+        <option value="H1" selected>1h</option>
+        <option value="H4">4h</option>
+        <option value="D1">1d</option>
+      </select>
+    </div>
+    <div>
+      <label for="hist-years">Years back</label>
+      <input type="text" id="hist-years" value="5" />
+    </div>
+  </div>
+  <div class="btn-row">
+    <button class="btn-save" id="hist-download-btn">Download History</button>
+    <button class="btn-remove" id="hist-status-btn" style="flex:1;">Check Status</button>
+  </div>
+  <div class="msg" id="hist-msg"></div>
+</div>
+<div class="card">
+  <div class="card-header">
+    <div class="card-title">Recent Backtest Runs</div>
+    <button class="close-btn" id="refresh-backtest-btn" style="color:var(--muted);border-color:var(--border);">Refresh</button>
+  </div>
+  <table id="backtest-table">
+    <thead><tr><th>Symbol</th><th>Trades</th><th>Win rate</th><th>P/L %</th></tr></thead>
+    <tbody><tr><td colspan="4" class="empty-row">No backtest runs yet</td></tr></tbody>
+  </table>
+</div>
+
 <div class="section-title">Research Engine</div>
 <div class="card">
   <label for="research-q">Ask a market question</label>
@@ -224,6 +267,111 @@ document.getElementById("research-btn").addEventListener("click", async () => {
 });
 
 loadStatus();
+
+// ---------- Historical Data & Backtesting ----------
+
+async function populateHistBrokerSelect() {
+  try {
+    const resp = await fetch("/api/status");
+    const data = await resp.json();
+    const connected = Object.keys(data.brokers || {}).filter(id => data.brokers[id].connected);
+    const select = document.getElementById("hist-broker");
+    select.innerHTML = connected.length
+      ? connected.map(id => `<option value="${id}">${id}</option>`).join("")
+      : `<option value="">No broker connected</option>`;
+  } catch (e) {
+    // leave as-is
+  }
+}
+
+document.getElementById("hist-download-btn").addEventListener("click", async () => {
+  const broker = document.getElementById("hist-broker").value;
+  const symbol = document.getElementById("hist-symbol").value.trim();
+  const timeframe = document.getElementById("hist-timeframe").value;
+  const years = document.getElementById("hist-years").value.trim() || "5";
+  const msg = document.getElementById("hist-msg");
+  if (!broker || !symbol) {
+    msg.textContent = "Pick a broker and enter a symbol first.";
+    msg.className = "msg err";
+    return;
+  }
+  msg.textContent = "Starting download in the background — this can take a few minutes for years of data...";
+  msg.className = "msg";
+  try {
+    const resp = await fetch(`/${broker}/historical/download?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&years=${years}`, { method: "POST" });
+    const data = await resp.json();
+    if (resp.ok) {
+      msg.textContent = `Download started for ${data.symbol} (${data.timeframe}, ${data.years}y). Tap "Check Status" in a bit to see progress.`;
+      msg.className = "msg ok";
+    } else {
+      msg.textContent = data.detail || "Couldn't start download.";
+      msg.className = "msg err";
+    }
+  } catch (e) {
+    msg.textContent = "Network error — try again.";
+    msg.className = "msg err";
+  }
+});
+
+document.getElementById("hist-status-btn").addEventListener("click", async () => {
+  const broker = document.getElementById("hist-broker").value;
+  const symbol = document.getElementById("hist-symbol").value.trim();
+  const timeframe = document.getElementById("hist-timeframe").value;
+  const msg = document.getElementById("hist-msg");
+  if (!broker || !symbol) {
+    msg.textContent = "Pick a broker and enter a symbol first.";
+    msg.className = "msg err";
+    return;
+  }
+  msg.textContent = "Checking...";
+  msg.className = "msg";
+  try {
+    const resp = await fetch(`/historical/status?broker=${broker}&symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}`);
+    const data = await resp.json();
+    if (resp.ok) {
+      msg.textContent = data.candles_stored > 0
+        ? `${data.candles_stored.toLocaleString()} candles stored, from ${new Date(data.earliest).toLocaleDateString()} to ${new Date(data.latest).toLocaleDateString()}.`
+        : "No candles stored yet for this symbol/timeframe.";
+      msg.className = "msg ok";
+    } else {
+      msg.textContent = data.detail || "Couldn't check status.";
+      msg.className = "msg err";
+    }
+  } catch (e) {
+    msg.textContent = "Network error — try again.";
+    msg.className = "msg err";
+  }
+});
+
+async function loadBacktestHistory() {
+  const tbody = document.querySelector("#backtest-table tbody");
+  try {
+    const resp = await fetch("/backtest/history?limit=20");
+    const rows = await resp.json();
+    if (!resp.ok || !rows.length) {
+      tbody.innerHTML = `<tr><td colspan="4" class="empty-row">No backtest runs yet</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const winRate = r.trades ? Math.round((r.wins / r.trades) * 100) : 0;
+      return `
+        <tr>
+          <td>${r.symbol}</td>
+          <td>${r.trades} (${r.wins}W/${r.losses}L)</td>
+          <td>${winRate}%</td>
+          <td style="color:${r.pnl_pct >= 0 ? 'var(--ok)' : 'var(--danger)'}">${r.pnl_pct >= 0 ? '+' : ''}${r.pnl_pct.toFixed(2)}%</td>
+        </tr>
+      `;
+    }).join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="empty-row">Couldn't load backtest history</td></tr>`;
+  }
+}
+
+document.getElementById("refresh-backtest-btn").addEventListener("click", loadBacktestHistory);
+
+populateHistBrokerSelect();
+loadBacktestHistory();
 </script>
 
 </body>

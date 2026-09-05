@@ -90,3 +90,20 @@ class MemoryEpisode(Base):
     outcome: Mapped[str] = mapped_column(Text, default="")
     lesson: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BacktestRun(Base):
+    """Result of replaying Quick Brain against stored historical
+    candles for one symbol — what the weekend practice loop produces,
+    and what a manual backtest run also writes to."""
+    __tablename__ = "backtest_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    broker: Mapped[str] = mapped_column(String(32))
+    symbol: Mapped[str] = mapped_column(String(32))
+    timeframe: Mapped[str] = mapped_column(String(8))
+    trades: Mapped[int] = mapped_column(Integer, default=0)
+    wins: Mapped[int] = mapped_column(Integer, default=0)
+    losses: Mapped[int] = mapped_column(Integer, default=0)
+    pnl_pct: Mapped[float] = mapped_column(Float, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
