@@ -17,6 +17,7 @@ from strategies.quick_brain import QuickBrain, Signal, TrendReading
 from risk.risk_manager import RiskManager
 from db.database import SessionLocal
 from db.models import TradeExecution
+from ai_gateway.gateway import gateway as ai_gateway
 
 logger = logging.getLogger("echomatrix.scanner")
 
@@ -31,6 +32,7 @@ class ScannerConfig:
     max_symbols_per_scan: int = 30      # cap so one cycle doesn't hammer the API
     stop_atr_multiplier: float = 1.5    # SL distance = ATR * this
     reward_risk_ratio: float = 1.5      # TP distance = SL distance * this
+    ai_review_enabled: bool = True      # send each risk-cleared setup to Gemini/Groq for a second opinion
 
 
 class Scanner:
@@ -120,10 +122,30 @@ class Scanner:
             )
             return None
 
+        review_note = ""
+        if self.config.ai_review_enabled:
+            account = await self.broker.get_account_info()
+            review = await ai_gateway.review_trade({
+                "symbol": reading.symbol, "side": side.value, "entry": entry,
+                "sl": stop, "tp": take_profit, "atr": reading.atr, "rsi": reading.rsi,
+                "strength": reading.strength, "volume": decision.suggested_volume,
+                "equity": account.equity,
+            })
+            review_note = f" | AI ({review['provider']}, {review['confidence']:.0f}% confidence): {review['note']}"
+            if not review["approve"]:
+                logger.info(f"skip {reading.symbol}: AI review declined — {review['note']}")
+                await self._log_trade(
+                    reading.symbol, side.value, decision.suggested_volume, entry, stop,
+                    reading.strength, triggered_by, success=False,
+                    message=f"AI review declined: {review['note']}", tp=take_profit,
+                )
+                return None
+
         result = await self.broker.place_order(
             reading.symbol, side, decision.suggested_volume,
             sl=stop, tp=take_profit, comment=f"EchoMatrix QuickBrain {reading.strength}",
         )
+        result.message += review_note
         logger.info(f"{'executed' if result.success else 'failed'} {reading.symbol}: {result.message}")
         await self._log_trade(
             reading.symbol, side.value, decision.suggested_volume, entry, stop,
