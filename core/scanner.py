@@ -107,8 +107,9 @@ class Scanner:
 
         decision = await self.risk.check_trade(
             self.broker, reading.symbol, side,
-            proposed_volume=symbol_info.min_volume,
             entry_price=entry, stop_loss_price=stop,
+            min_volume=symbol_info.min_volume, volume_step=symbol_info.volume_step,
+            contract_size=symbol_info.contract_size,
         )
         if not decision.allowed:
             logger.info(f"skip {reading.symbol}: {decision.reason}")

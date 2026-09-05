@@ -46,11 +46,25 @@ class RiskManager:
         price_distance = abs(entry_price - stop_loss_price)
         if price_distance == 0 or contract_size == 0:
             return 0.0
-        return round(risk_amount / (price_distance * contract_size), 4)
+        return round(risk_amount / (price_distance * contract_size), 8)
+
+    def round_to_lot(self, volume: float, min_volume: float, volume_step: float) -> float:
+        """Round DOWN to the exchange's actual tradeable increment — e.g.
+        Binance's LOT_SIZE stepSize. Rounding down (never up) means the
+        real position never risks more than what was calculated; if it
+        rounds to below the exchange's minimum, 0.0 signals 'too small
+        to trade at this risk level' rather than silently forcing the
+        minimum size (which would risk more than intended)."""
+        if volume_step <= 0:
+            return volume if volume >= min_volume else 0.0
+        steps = int(volume / volume_step + 1e-9)  # tiny epsilon guards float rounding at exact boundaries
+        rounded = round(steps * volume_step, 8)
+        return rounded if rounded >= min_volume else 0.0
 
     async def check_trade(
         self, broker: BrokerConnector, symbol: str, side: OrderSide,
-        proposed_volume: float, entry_price: float, stop_loss_price: float,
+        entry_price: float, stop_loss_price: float,
+        min_volume: float = 0.0, volume_step: float = 0.0, contract_size: float = 1.0,
     ) -> RiskDecision:
         account = await broker.get_account_info()
         drawdown = self.current_drawdown_pct(account.equity)
@@ -75,7 +89,14 @@ class RiskManager:
                                  reason=f"{symbol} exposure at cap "
                                         f"({self.config.max_exposure_per_symbol_pct}% of equity)")
 
-        sized_volume = self.position_size(account.equity, entry_price, stop_loss_price)
-        final_volume = min(proposed_volume, sized_volume) if sized_volume > 0 else proposed_volume
+        sized_volume = self.position_size(account.equity, entry_price, stop_loss_price, contract_size)
+        final_volume = self.round_to_lot(sized_volume, min_volume, volume_step)
+        if final_volume <= 0:
+            return RiskDecision(
+                allowed=False,
+                reason=f"risk-calculated size ({sized_volume}) is below this symbol's "
+                       f"minimum tradeable size ({min_volume}) — trading it would mean "
+                       f"risking more than {self.config.max_risk_per_trade_pct}% of equity",
+            )
 
         return RiskDecision(allowed=True, reason="within risk limits", suggested_volume=final_volume)
