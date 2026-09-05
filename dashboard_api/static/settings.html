@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>EchoMatrix — Settings</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<h1>EchoMatrix</h1>
+<div class="sub">Brokers, AI providers, and research</div>
+
+<div class="nav-bar">
+  <a class="nav-link" href="/">Dashboard</a>
+  <a class="nav-link active" href="/settings">Brokers & Settings</a>
+</div>
+
+<div class="section-title">Brokers</div>
+<div id="broker-cards"></div>
+
+<div class="section-title">AI Providers</div>
+<div id="ai-cards"></div>
+
+<div class="section-title">Research Engine</div>
+<div class="card">
+  <label for="research-q">Ask a market question</label>
+  <textarea id="research-q" placeholder="e.g. What tends to drive gold volatility around US CPI releases?"></textarea>
+  <div class="btn-row">
+    <button class="btn-save" id="research-btn">Ask</button>
+  </div>
+  <div id="research-out"></div>
+</div>
+
+<div class="db-status" id="db-status"></div>
+<div class="footer-note">Keys are stored on this server only — never shown once saved.</div>
+
+<script>
+const brokers = [
+  {
+    id: "binance",
+    name: "Binance",
+    endpointBase: "/api/credentials",
+    fields: [
+      { key: "api_key", label: "API Key", type: "text" },
+      { key: "api_secret", label: "API Secret", type: "password" },
+    ],
+    toggle: { key: "testnet", label: "Use Testnet (practice funds)" },
+  },
+  {
+    id: "deriv",
+    name: "Deriv",
+    endpointBase: "/api/credentials",
+    fields: [
+      { key: "api_token", label: "API Token", type: "password" },
+      { key: "app_id", label: "App ID (leave as 1089 if unsure)", type: "text", placeholder: "1089" },
+    ],
+    toggle: { key: "use_demo", label: "Use Demo account (practice funds)" },
+  },
+];
+
+const aiProviders = [
+  {
+    id: "gemini",
+    name: "Google Gemini",
+    endpointBase: "/api/ai-credentials",
+    fields: [{ key: "api_key", label: "API Key", type: "password" }],
+  },
+  {
+    id: "groq",
+    name: "Groq",
+    endpointBase: "/api/ai-credentials",
+    fields: [{ key: "api_key", label: "API Key", type: "password" }],
+  },
+];
+
+const brokerContainer = document.getElementById("broker-cards");
+const aiContainer = document.getElementById("ai-cards");
+
+function renderCard(broker, status) {
+  const st = status[broker.id] || { configured: false, connected: false };
+  const badgeClass = st.connected ? "connected" : st.configured ? "saved" : "off";
+  const badgeText = st.connected ? "Connected" : st.configured ? "Saved, not connected" : "Not set up";
+
+  const fieldsHtml = broker.fields.map(f => `
+    <label for="${broker.id}-${f.key}">${f.label}</label>
+    <input type="${f.type}" id="${broker.id}-${f.key}" placeholder="${f.placeholder || ''}" />
+  `).join("");
+
+  const toggleHtml = broker.toggle ? `
+    <div class="toggle-row">
+      <input type="checkbox" id="${broker.id}-${broker.toggle.key}" ${st[broker.toggle.key] !== false ? "checked" : ""} />
+      <label for="${broker.id}-${broker.toggle.key}" style="margin:0;">${broker.toggle.label}</label>
+    </div>
+  ` : "";
+
+  const div = document.createElement("div");
+  div.className = "card";
+  div.innerHTML = `
+    <div class="card-header">
+      <div class="card-title">${broker.name}</div>
+      <div class="badge ${badgeClass}">${badgeText}</div>
+    </div>
+    ${fieldsHtml}
+    ${toggleHtml}
+    <div class="btn-row">
+      <button class="btn-save">Save & Connect</button>
+      ${st.configured ? `<button class="btn-remove">Remove</button>` : ""}
+    </div>
+    <div class="msg"></div>
+    ${st.connected ? `<div class="markets-summary" id="${broker.id}-markets"></div>` : ""}
+  `;
+
+  div.querySelector(".btn-save").addEventListener("click", () => saveCredentials(broker, div));
+  const removeBtn = div.querySelector(".btn-remove");
+  if (removeBtn) removeBtn.addEventListener("click", () => removeCredentials(broker, div));
+
+  if (st.connected) loadMarketsSummary(broker.id, div);
+
+  return div;
+}
+
+async function loadMarketsSummary(brokerId, cardEl) {
+  const el = cardEl.querySelector(".markets-summary");
+  if (!el) return;
+  try {
+    const resp = await fetch(`/${brokerId}/markets`);
+    const data = await resp.json();
+    if (data.error || !data.by_market) return; // broker doesn't support this diagnostic — stay quiet
+    const parts = Object.entries(data.by_market).map(([market, count]) => `${market}: ${count}`);
+    el.textContent = `Markets available on this account — ${parts.join(" · ")}`;
+  } catch (e) {
+    // silent — this is a nice-to-have diagnostic, not critical
+  }
+}
+
+async function saveCredentials(broker, cardEl) {
+  const msg = cardEl.querySelector(".msg");
+  const body = {};
+  for (const f of broker.fields) {
+    body[f.key] = cardEl.querySelector(`#${broker.id}-${f.key}`).value.trim();
+  }
+  if (broker.toggle) {
+    body[broker.toggle.key] = cardEl.querySelector(`#${broker.id}-${broker.toggle.key}`).checked;
+  }
+  msg.textContent = "Connecting...";
+  msg.className = "msg";
+  let shouldRefresh = true;
+  try {
+    const resp = await fetch(`${broker.endpointBase}/${broker.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.connected) {
+      msg.textContent = "Connected successfully.";
+      msg.className = "msg ok";
+    } else if (resp.ok) {
+      msg.textContent = "Saved, but couldn't connect: " + (data.message || "check your keys");
+      msg.className = "msg err";
+      shouldRefresh = false; // keep the reason on screen until the next manual action
+    } else {
+      msg.textContent = data.detail || "Something went wrong.";
+      msg.className = "msg err";
+      shouldRefresh = false;
+    }
+  } catch (e) {
+    msg.textContent = "Network error — try again.";
+    msg.className = "msg err";
+    shouldRefresh = false;
+  }
+  if (shouldRefresh) setTimeout(loadStatus, 2500);
+}
+
+async function removeCredentials(broker, cardEl) {
+  const msg = cardEl.querySelector(".msg");
+  try {
+    await fetch(`${broker.endpointBase}/${broker.id}`, { method: "DELETE" });
+    msg.textContent = "Removed.";
+    msg.className = "msg ok";
+  } catch (e) {
+    msg.textContent = "Couldn't remove — try again.";
+    msg.className = "msg err";
+  }
+  setTimeout(loadStatus, 2000);
+}
+
+async function loadStatus() {
+  const resp = await fetch("/api/status");
+  const data = await resp.json();
+
+  brokerContainer.innerHTML = "";
+  brokers.forEach(b => brokerContainer.appendChild(renderCard(b, data.brokers || {})));
+
+  aiContainer.innerHTML = "";
+  aiProviders.forEach(p => aiContainer.appendChild(renderCard(p, data.ai || {})));
+
+  const dbEl = document.getElementById("db-status");
+  dbEl.textContent = data.database ? "Database: connected" : "Database: not connected";
+  dbEl.className = "db-status" + (data.database ? " ok" : "");
+}
+
+document.getElementById("research-btn").addEventListener("click", async () => {
+  const q = document.getElementById("research-q").value.trim();
+  const out = document.getElementById("research-out");
+  if (!q) return;
+  out.innerHTML = `<div class="finding">Thinking...</div>`;
+  try {
+    const resp = await fetch("/research", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: q }),
+    });
+    const data = await resp.json();
+    if (resp.ok) {
+      out.innerHTML = `<div class="finding"><span class="provider-tag">${data.provider}</span>${data.finding}</div>`;
+    } else {
+      out.innerHTML = `<div class="finding" style="color:var(--danger)">${data.detail || "Something went wrong."}</div>`;
+    }
+  } catch (e) {
+    out.innerHTML = `<div class="finding" style="color:var(--danger)">Network error — try again.</div>`;
+  }
+});
+
+loadStatus();
+</script>
+
+</body>
+</html>

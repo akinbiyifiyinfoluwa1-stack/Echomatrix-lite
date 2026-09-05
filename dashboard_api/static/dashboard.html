@@ -3,224 +3,21 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>EchoMatrix</title>
-<style>
-  :root {
-    --bg: #0b0f14;
-    --card: #131a22;
-    --border: #232d38;
-    --text: #e8edf2;
-    --muted: #8a97a5;
-    --accent: #2dd4bf;
-    --danger: #f87171;
-    --ok: #4ade80;
-    --warn: #fbbf24;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    padding: 20px 16px 60px;
-  }
-  h1 {
-    font-size: 22px;
-    margin: 4px 0 2px;
-  }
-  .sub {
-    color: var(--muted);
-    font-size: 13px;
-    margin-bottom: 20px;
-  }
-  .card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 16px;
-    margin-bottom: 16px;
-  }
-  .card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 12px;
-  }
-  .card-title {
-    font-size: 16px;
-    font-weight: 600;
-  }
-  .badge {
-    font-size: 12px;
-    padding: 3px 10px;
-    border-radius: 999px;
-    font-weight: 600;
-  }
-  .badge.connected { background: rgba(74,222,128,0.15); color: var(--ok); }
-  .badge.saved { background: rgba(251,191,36,0.15); color: var(--warn); }
-  .badge.off { background: rgba(138,151,165,0.15); color: var(--muted); }
-  label {
-    display: block;
-    font-size: 13px;
-    color: var(--muted);
-    margin: 10px 0 5px;
-  }
-  input[type=text], input[type=password] {
-    width: 100%;
-    background: #0e141b;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 11px 12px;
-    color: var(--text);
-    font-size: 15px;
-  }
-  input:focus { outline: 1px solid var(--accent); }
-  .toggle-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-top: 12px;
-  }
-  .toggle-row label { margin: 0; }
-  .btn-row {
-    display: flex;
-    gap: 10px;
-    margin-top: 16px;
-  }
-  button {
-    border: none;
-    border-radius: 8px;
-    padding: 11px 16px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .btn-save {
-    background: var(--accent);
-    color: #04211d;
-    flex: 1;
-  }
-  .btn-remove {
-    background: transparent;
-    color: var(--danger);
-    border: 1px solid rgba(248,113,113,0.4);
-  }
-  .msg {
-    font-size: 13px;
-    margin-top: 10px;
-    min-height: 16px;
-  }
-  .msg.ok { color: var(--ok); }
-  .msg.err { color: var(--danger); }
-  .markets-summary {
-    font-size: 12px;
-    color: var(--muted);
-    margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px solid rgba(255,255,255,0.08);
-  }
-  .footer-note {
-    color: var(--muted);
-    font-size: 12px;
-    text-align: center;
-    margin-top: 24px;
-  }
-  .section-title {
-    font-size: 13px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--muted);
-    margin: 26px 0 10px;
-  }
-  textarea {
-    width: 100%;
-    background: #0e141b;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 11px 12px;
-    color: var(--text);
-    font-size: 15px;
-    min-height: 70px;
-    font-family: inherit;
-    resize: vertical;
-  }
-  .finding {
-    background: #0e141b;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 12px;
-    margin-top: 12px;
-    font-size: 14px;
-    line-height: 1.5;
-    white-space: pre-wrap;
-  }
-  .finding .provider-tag {
-    display: inline-block;
-    font-size: 11px;
-    color: var(--accent);
-    margin-bottom: 6px;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  .db-status {
-    font-size: 12px;
-    color: var(--muted);
-    text-align: center;
-    margin-top: 6px;
-  }
-  .db-status.ok { color: var(--ok); }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 500; font-size: 12px; }
-  .empty-row { color: var(--muted); text-align: center; padding: 16px 0; }
-  .stat-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-    margin-bottom: 4px;
-  }
-  .stat {
-    background: #0e141b;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 12px;
-  }
-  .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
-  .stat .value { font-size: 18px; font-weight: 700; margin-top: 2px; }
-  select {
-    width: 100%;
-    background: #0e141b;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 11px 12px;
-    color: var(--text);
-    font-size: 15px;
-  }
-  .row-2 { display: flex; gap: 10px; }
-  .row-2 > div { flex: 1; }
-  canvas { max-width: 100%; }
-  .pill-buy { color: var(--ok); font-weight: 600; }
-  .pill-sell { color: var(--danger); font-weight: 600; }
-  .signal-score { font-weight: 700; color: var(--accent); }
-  .hint { color: var(--muted); font-size: 13px; text-align: center; padding: 10px 0; }
-  .close-btn {
-    background: transparent;
-    border: 1px solid rgba(248,113,113,0.4);
-    color: var(--danger);
-    padding: 5px 10px;
-    border-radius: 6px;
-    font-size: 12px;
-  }
-</style>
+<title>EchoMatrix — Dashboard</title>
+<link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
 
 <h1>EchoMatrix</h1>
 <div class="sub">Your live trading dashboard</div>
 
-<div class="section-title">Live Dashboard</div>
+<div class="nav-bar">
+  <a class="nav-link active" href="/">Dashboard</a>
+  <a class="nav-link" href="/settings">Brokers & Settings</a>
+</div>
+
 <div class="card" id="no-broker-hint" style="display:none;">
-  <div class="hint">Connect a broker below to see your account, positions, and live chart here.</div>
+  <div class="hint">No broker connected yet. Head to <a href="/settings" style="color:var(--accent);">Brokers & Settings</a> to connect one.</div>
 </div>
 
 <div id="live-dashboard" style="display:none;">
@@ -297,201 +94,23 @@
   </div>
 </div>
 
-<div class="section-title">Brokers</div>
-<div id="broker-cards"></div>
-
-<div class="section-title">AI Providers</div>
-<div id="ai-cards"></div>
-
-<div class="section-title">Research Engine</div>
-<div class="card">
-  <label for="research-q">Ask a market question</label>
-  <textarea id="research-q" placeholder="e.g. What tends to drive gold volatility around US CPI releases?"></textarea>
-  <div class="btn-row">
-    <button class="btn-save" id="research-btn">Ask</button>
-  </div>
-  <div id="research-out"></div>
-</div>
-
-<div class="db-status" id="db-status"></div>
-<div class="footer-note">Keys are stored on this server only — never shown once saved.</div>
-
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script>
-const brokers = [
-  {
-    id: "binance",
-    name: "Binance",
-    endpointBase: "/api/credentials",
-    fields: [
-      { key: "api_key", label: "API Key", type: "text" },
-      { key: "api_secret", label: "API Secret", type: "password" },
-    ],
-    toggle: { key: "testnet", label: "Use Testnet (practice funds)" },
-  },
-  {
-    id: "deriv",
-    name: "Deriv",
-    endpointBase: "/api/credentials",
-    fields: [
-      { key: "api_token", label: "API Token", type: "password" },
-      { key: "app_id", label: "App ID (leave as 1089 if unsure)", type: "text", placeholder: "1089" },
-    ],
-    toggle: { key: "use_demo", label: "Use Demo account (practice funds)" },
-  },
-];
-
-const aiProviders = [
-  {
-    id: "gemini",
-    name: "Google Gemini",
-    endpointBase: "/api/ai-credentials",
-    fields: [{ key: "api_key", label: "API Key", type: "password" }],
-  },
-  {
-    id: "groq",
-    name: "Groq",
-    endpointBase: "/api/ai-credentials",
-    fields: [{ key: "api_key", label: "API Key", type: "password" }],
-  },
-];
-
-const brokerContainer = document.getElementById("broker-cards");
-const aiContainer = document.getElementById("ai-cards");
-
-function renderCard(broker, status) {
-  const st = status[broker.id] || { configured: false, connected: false };
-  const badgeClass = st.connected ? "connected" : st.configured ? "saved" : "off";
-  const badgeText = st.connected ? "Connected" : st.configured ? "Saved, not connected" : "Not set up";
-
-  const fieldsHtml = broker.fields.map(f => `
-    <label for="${broker.id}-${f.key}">${f.label}</label>
-    <input type="${f.type}" id="${broker.id}-${f.key}" placeholder="${f.placeholder || ''}" />
-  `).join("");
-
-  const toggleHtml = broker.toggle ? `
-    <div class="toggle-row">
-      <input type="checkbox" id="${broker.id}-${broker.toggle.key}" ${st[broker.toggle.key] !== false ? "checked" : ""} />
-      <label for="${broker.id}-${broker.toggle.key}" style="margin:0;">${broker.toggle.label}</label>
-    </div>
-  ` : "";
-
-  const div = document.createElement("div");
-  div.className = "card";
-  div.innerHTML = `
-    <div class="card-header">
-      <div class="card-title">${broker.name}</div>
-      <div class="badge ${badgeClass}">${badgeText}</div>
-    </div>
-    ${fieldsHtml}
-    ${toggleHtml}
-    <div class="btn-row">
-      <button class="btn-save">Save & Connect</button>
-      ${st.configured ? `<button class="btn-remove">Remove</button>` : ""}
-    </div>
-    <div class="msg"></div>
-    ${st.connected ? `<div class="markets-summary" id="${broker.id}-markets"></div>` : ""}
-  `;
-
-  div.querySelector(".btn-save").addEventListener("click", () => saveCredentials(broker, div));
-  const removeBtn = div.querySelector(".btn-remove");
-  if (removeBtn) removeBtn.addEventListener("click", () => removeCredentials(broker, div));
-
-  if (st.connected) loadMarketsSummary(broker.id, div);
-
-  return div;
-}
-
-async function loadMarketsSummary(brokerId, cardEl) {
-  const el = cardEl.querySelector(".markets-summary");
-  if (!el) return;
-  try {
-    const resp = await fetch(`/${brokerId}/markets`);
-    const data = await resp.json();
-    if (data.error || !data.by_market) return; // broker doesn't support this diagnostic — stay quiet
-    const parts = Object.entries(data.by_market).map(([market, count]) => `${market}: ${count}`);
-    el.textContent = `Markets available on this account — ${parts.join(" · ")}`;
-  } catch (e) {
-    // silent — this is a nice-to-have diagnostic, not critical
-  }
-}
-
-async function saveCredentials(broker, cardEl) {
-  const msg = cardEl.querySelector(".msg");
-  const body = {};
-  for (const f of broker.fields) {
-    body[f.key] = cardEl.querySelector(`#${broker.id}-${f.key}`).value.trim();
-  }
-  if (broker.toggle) {
-    body[broker.toggle.key] = cardEl.querySelector(`#${broker.id}-${broker.toggle.key}`).checked;
-  }
-  msg.textContent = "Connecting...";
-  msg.className = "msg";
-  let shouldRefresh = true;
-  try {
-    const resp = await fetch(`${broker.endpointBase}/${broker.id}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await resp.json();
-    if (resp.ok && data.connected) {
-      msg.textContent = "Connected successfully.";
-      msg.className = "msg ok";
-    } else if (resp.ok) {
-      msg.textContent = "Saved, but couldn't connect: " + (data.message || "check your keys");
-      msg.className = "msg err";
-      shouldRefresh = false; // keep the reason on screen until the next manual action
-    } else {
-      msg.textContent = data.detail || "Something went wrong.";
-      msg.className = "msg err";
-      shouldRefresh = false;
-    }
-  } catch (e) {
-    msg.textContent = "Network error — try again.";
-    msg.className = "msg err";
-    shouldRefresh = false;
-  }
-  if (shouldRefresh) setTimeout(loadStatus, 2500);
-}
-
-async function removeCredentials(broker, cardEl) {
-  const msg = cardEl.querySelector(".msg");
-  try {
-    await fetch(`${broker.endpointBase}/${broker.id}`, { method: "DELETE" });
-    msg.textContent = "Removed.";
-    msg.className = "msg ok";
-  } catch (e) {
-    msg.textContent = "Couldn't remove — try again.";
-    msg.className = "msg err";
-  }
-  setTimeout(loadStatus, 2000);
-}
-
-async function loadStatus() {
-  const resp = await fetch("/api/status");
-  const data = await resp.json();
-
-  brokerContainer.innerHTML = "";
-  brokers.forEach(b => brokerContainer.appendChild(renderCard(b, data.brokers || {})));
-
-  aiContainer.innerHTML = "";
-  aiProviders.forEach(p => aiContainer.appendChild(renderCard(p, data.ai || {})));
-
-  const dbEl = document.getElementById("db-status");
-  dbEl.textContent = data.database ? "Database: connected" : "Database: not connected";
-  dbEl.className = "db-status" + (data.database ? " ok" : "");
-
-  updateLiveDashboard(data.brokers || {});
-}
-
-// ---------- Live Dashboard ----------
-
 let priceChart = null;
 let currentBroker = null;
 
 function connectedBrokerIds(statusBrokers) {
   return Object.keys(statusBrokers).filter(id => statusBrokers[id].connected);
+}
+
+async function refreshConnectedBrokers() {
+  try {
+    const resp = await fetch("/api/status");
+    const data = await resp.json();
+    updateLiveDashboard(data.brokers || {});
+  } catch (e) {
+    // leave last-known state on screen
+  }
 }
 
 function updateLiveDashboard(statusBrokers) {
@@ -562,7 +181,7 @@ async function refreshPositions() {
         <td>${p.symbol}</td>
         <td class="${p.side === 'buy' ? 'pill-buy' : 'pill-sell'}">${p.side}</td>
         <td>${p.volume}</td>
-        <td class="${p.profit >= 0 ? 'pill-buy' : 'pill-sell'}">${fmtMoney(p.profit)}</td>
+        <td style="color:${p.profit >= 0 ? 'var(--ok)' : 'var(--danger)'}">${fmtMoney(p.profit)}</td>
         <td><button class="close-btn" data-id="${p.id}">Close</button></td>
       </tr>
     `).join("");
@@ -676,7 +295,6 @@ document.getElementById("run-scan-btn").addEventListener("click", async () => {
 
 async function executeTrade(btn) {
   const symbol = btn.dataset.symbol;
-  const original = btn.textContent;
   btn.textContent = "Placing...";
   btn.disabled = true;
   try {
@@ -734,28 +352,6 @@ document.getElementById("auto-trade-btn").addEventListener("click", async () => 
   refreshAutoTradeStatus();
 });
 
-document.getElementById("research-btn").addEventListener("click", async () => {
-  const q = document.getElementById("research-q").value.trim();
-  const out = document.getElementById("research-out");
-  if (!q) return;
-  out.innerHTML = `<div class="finding">Thinking...</div>`;
-  try {
-    const resp = await fetch("/research", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: q }),
-    });
-    const data = await resp.json();
-    if (resp.ok) {
-      out.innerHTML = `<div class="finding"><span class="provider-tag">${data.provider}</span>${data.finding}</div>`;
-    } else {
-      out.innerHTML = `<div class="finding" style="color:var(--danger)">${data.detail || "Something went wrong."}</div>`;
-    }
-  } catch (e) {
-    out.innerHTML = `<div class="finding" style="color:var(--danger)">Network error — try again.</div>`;
-  }
-});
-
 async function loadTradeHistory() {
   const tbody = document.querySelector("#history-table tbody");
   try {
@@ -785,7 +381,7 @@ function fmt(n) {
 
 document.getElementById("refresh-history-btn").addEventListener("click", loadTradeHistory);
 
-loadStatus();
+refreshConnectedBrokers();
 loadTradeHistory();
 </script>
 

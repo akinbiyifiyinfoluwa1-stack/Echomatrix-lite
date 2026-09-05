@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from sqlalchemy import select
@@ -46,6 +47,7 @@ async def clean_error_handler(request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc}"})
 
 STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Registered brokers, keyed by name. Populated on startup from env vars
 # and/or the dashboard's saved credentials (env vars take priority).
@@ -129,6 +131,14 @@ class OrderRequest(BaseModel):
 async def dashboard():
     return FileResponse(
         STATIC_DIR / "dashboard.html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page():
+    return FileResponse(
+        STATIC_DIR / "settings.html",
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
     )
 
