@@ -159,10 +159,56 @@ class BinanceConnector(BrokerConnector):
                 ))
             fills = order.get("fills", [])
             fill_price = float(fills[0]["price"]) if fills else price
-            return OrderResult(success=True, order_id=str(order["orderId"]),
-                                filled_price=fill_price, message="filled")
+            result = OrderResult(success=True, order_id=str(order["orderId"]),
+                                  filled_price=fill_price, message="filled")
         except Exception as e:
             return OrderResult(success=False, order_id=None, filled_price=None, message=str(e))
+
+        # Entering a new long (BUY) with SL/TP levels: attach a protective
+        # bracket so the position isn't left naked. A SELL here is treated
+        # as closing an existing position, not opening a short, so no
+        # bracket is needed on that side. A failed bracket doesn't undo
+        # the entry that already filled — it's surfaced in the message
+        # instead, since silently losing SL/TP protection is worse than
+        # a slightly awkward return value.
+        if side == OrderSide.BUY and (sl or tp):
+            bracket_note = await self._attach_bracket(symbol, volume, sl, tp)
+            if bracket_note:
+                result.message += f" — {bracket_note}"
+        return result
+
+    async def _attach_bracket(self, symbol: str, quantity: float,
+                               sl: Optional[float], tp: Optional[float]) -> str:
+        """Place the SL/TP protection for a long position just opened.
+        Both legs -> one OCO sell order (standard Binance bracket).
+        Only one leg -> a plain stop or limit sell for just that side."""
+        try:
+            if sl and tp:
+                stop_limit = round(sl * 0.998, 8)  # just under the trigger so the stop-limit actually fills
+                await self._signed(lambda: self.client.create_oco_order(
+                    symbol=symbol, side="SELL", quantity=quantity,
+                    price=str(round(tp, 8)),
+                    stopPrice=str(round(sl, 8)),
+                    stopLimitPrice=str(stop_limit),
+                    stopLimitTimeInForce="GTC",
+                ))
+                return f"OCO bracket set (SL {sl}, TP {tp})"
+            elif sl:
+                stop_limit = round(sl * 0.998, 8)
+                await self._signed(lambda: self.client.create_order(
+                    symbol=symbol, side="SELL", type="STOP_LOSS_LIMIT",
+                    quantity=quantity, price=str(stop_limit),
+                    stopPrice=str(round(sl, 8)), timeInForce="GTC",
+                ))
+                return f"stop-loss set at {sl}"
+            else:
+                await self._signed(lambda: self.client.create_order(
+                    symbol=symbol, side="SELL", type="LIMIT",
+                    quantity=quantity, price=str(round(tp, 8)), timeInForce="GTC",
+                ))
+                return f"take-profit set at {tp}"
+        except Exception as e:
+            return f"WARNING: entry filled but SL/TP bracket failed ({e}) — position is unprotected"
 
     async def close_position(self, position_id: str) -> OrderResult:
         # position_id here is the asset symbol (spot balances aren't "closed"

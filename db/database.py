@@ -39,6 +39,13 @@ async def init_db() -> bool:
     from db import models  # noqa: F401 — registers tables on Base.metadata
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # create_all only adds missing tables, not missing columns on
+        # existing ones — this is a plain additive column, so patch it
+        # in directly rather than pulling in a full migration tool.
+        from sqlalchemy import text
+        await conn.execute(text(
+            "ALTER TABLE trade_executions ADD COLUMN IF NOT EXISTS take_profit FLOAT DEFAULT 0"
+        ))
     return True
 
 

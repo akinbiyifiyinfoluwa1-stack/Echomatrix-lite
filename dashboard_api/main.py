@@ -278,6 +278,7 @@ async def trade_history(limit: int = 30):
         return [
             {"id": r.id, "broker": r.broker, "symbol": r.symbol, "side": r.side,
              "volume": r.volume, "entry_price": r.entry_price, "stop_loss": r.stop_loss,
+             "take_profit": r.take_profit,
              "signal_strength": r.signal_strength, "triggered_by": r.triggered_by,
              "order_id": r.order_id, "success": r.success, "message": r.message,
              "created_at": r.created_at.isoformat()}

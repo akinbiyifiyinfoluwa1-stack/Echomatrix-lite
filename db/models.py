@@ -71,6 +71,7 @@ class TradeExecution(Base):
     volume: Mapped[float] = mapped_column(Float)
     entry_price: Mapped[float] = mapped_column(Float, default=0)
     stop_loss: Mapped[float] = mapped_column(Float, default=0)
+    take_profit: Mapped[float] = mapped_column(Float, default=0)
     signal_strength: Mapped[float] = mapped_column(Float, default=0)
     triggered_by: Mapped[str] = mapped_column(String(16), default="auto")  # auto | manual
     order_id: Mapped[str] = mapped_column(String(64), default="")

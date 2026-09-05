@@ -767,7 +767,7 @@ async function loadTradeHistory() {
     }
     tbody.innerHTML = rows.map(r => `
       <tr>
-        <td>${r.symbol}</td>
+        <td>${r.symbol}<br><span style="font-size:11px;color:var(--muted)">SL ${fmt(r.stop_loss)} · TP ${fmt(r.take_profit)}</span></td>
         <td class="${r.side === 'buy' ? 'pill-buy' : 'pill-sell'}">${r.side}</td>
         <td>${r.triggered_by}</td>
         <td style="color:${r.success ? 'var(--ok)' : 'var(--danger)'}">${r.success ? 'placed' : 'declined'}</td>
@@ -776,6 +776,10 @@ async function loadTradeHistory() {
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="4" class="empty-row">Couldn't load history</td></tr>`;
   }
+}
+
+function fmt(n) {
+  return n ? (Math.abs(n) < 10 ? n.toFixed(5) : n.toFixed(2)) : "—";
 }
 
 document.getElementById("refresh-history-btn").addEventListener("click", loadTradeHistory);

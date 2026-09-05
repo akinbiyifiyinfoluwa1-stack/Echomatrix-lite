@@ -29,6 +29,8 @@ class ScannerConfig:
     min_signal_strength: float = 65.0
     auto_execute: bool = False          # off by default — safety default
     max_symbols_per_scan: int = 30      # cap so one cycle doesn't hammer the API
+    stop_atr_multiplier: float = 1.5    # SL distance = ATR * this
+    reward_risk_ratio: float = 1.5      # TP distance = SL distance * this
 
 
 class Scanner:
@@ -66,7 +68,7 @@ class Scanner:
 
     async def _log_trade(self, symbol: str, side: str, volume: float, entry: float,
                           stop: float, strength: float, triggered_by: str,
-                          success: bool, message: str, order_id: str = "") -> None:
+                          success: bool, message: str, order_id: str = "", tp: float = 0.0) -> None:
         """Best-effort trade journal write — never let a logging failure
         interfere with the actual trade that already happened."""
         if not SessionLocal:
@@ -75,7 +77,7 @@ class Scanner:
             async with SessionLocal() as session:
                 session.add(TradeExecution(
                     broker=self.broker.name, symbol=symbol, side=side, volume=volume,
-                    entry_price=entry, stop_loss=stop, signal_strength=strength,
+                    entry_price=entry, stop_loss=stop, take_profit=tp, signal_strength=strength,
                     triggered_by=triggered_by, order_id=order_id,
                     success=success, message=message,
                 ))
@@ -92,9 +94,16 @@ class Scanner:
         side = OrderSide.BUY if reading.signal == Signal.BUY else OrderSide.SELL
         entry = symbol_info.ask if side == OrderSide.BUY else symbol_info.bid
 
-        # ATR-based stop — 1.5x ATR away from entry, direction-aware
-        stop_distance = reading.atr * 1.5 or entry * 0.01
-        stop = entry - stop_distance if side == OrderSide.BUY else entry + stop_distance
+        # ATR-based stop, with a take-profit sized off the same distance
+        # by a fixed reward:risk ratio — both automatic, no manual input.
+        stop_distance = reading.atr * self.config.stop_atr_multiplier or entry * 0.01
+        tp_distance = stop_distance * self.config.reward_risk_ratio
+        if side == OrderSide.BUY:
+            stop = entry - stop_distance
+            take_profit = entry + tp_distance
+        else:
+            stop = entry + stop_distance
+            take_profit = entry - tp_distance
 
         decision = await self.risk.check_trade(
             self.broker, reading.symbol, side,
@@ -106,19 +115,19 @@ class Scanner:
             await self._log_trade(
                 reading.symbol, side.value, symbol_info.min_volume, entry, stop,
                 reading.strength, triggered_by, success=False,
-                message=f"risk check declined: {decision.reason}",
+                message=f"risk check declined: {decision.reason}", tp=take_profit,
             )
             return None
 
         result = await self.broker.place_order(
             reading.symbol, side, decision.suggested_volume,
-            sl=stop, comment=f"EchoMatrix QuickBrain {reading.strength}",
+            sl=stop, tp=take_profit, comment=f"EchoMatrix QuickBrain {reading.strength}",
         )
         logger.info(f"{'executed' if result.success else 'failed'} {reading.symbol}: {result.message}")
         await self._log_trade(
             reading.symbol, side.value, decision.suggested_volume, entry, stop,
             reading.strength, triggered_by, success=result.success,
-            message=result.message, order_id=result.order_id or "",
+            message=result.message, order_id=result.order_id or "", tp=take_profit,
         )
         return result
 
