@@ -41,7 +41,18 @@ def _rsi(series: pd.Series, period: int = 14) -> pd.Series:
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100 - (100 / (1 + rs))
+    rsi = 100 - (100 / (1 + rs))
+    # Zero losses in the window is a real divide-by-zero above, which
+    # produced NaN and got silently treated as "neutral 50" downstream
+    # — but zero losses actually means maximally overbought (should be
+    # 100), and this happens precisely during the strong one-directional
+    # runs where an overbought filter matters most. Zero gains is the
+    # mirror case (maximally oversold, 0). Both-zero (flat window) is
+    # genuinely neutral.
+    rsi = rsi.mask((avg_loss == 0) & (avg_gain == 0), 50.0)
+    rsi = rsi.mask((avg_loss == 0) & (avg_gain != 0), 100.0)
+    rsi = rsi.mask((avg_gain == 0) & (avg_loss != 0), 0.0)
+    return rsi
 
 
 def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -83,20 +94,23 @@ class QuickBrain:
 
         crossed_up = prev_fast <= prev_slow and last_fast > last_slow
         crossed_down = prev_fast >= prev_slow and last_fast < last_slow
-        trending_up = last_fast > last_slow
-        trending_down = last_fast < last_slow
 
         signal = Signal.NONE
         strength = 0.0
 
-        if (crossed_up or trending_up) and last_rsi < self.rsi_overbought:
+        # Only fire on the actual moment the cross happens — not on
+        # every scan for as long as the trend continues afterward.
+        # The previous logic ("crossed_up or trending_up") kept
+        # re-signaling BUY hours into an already-extended move, which
+        # is how you end up buying right before a reversal.
+        if crossed_up and last_rsi < self.rsi_overbought:
             signal = Signal.BUY
             separation = abs(last_fast - last_slow) / last_slow * 100 if last_slow else 0
-            strength = min(100.0, 50 + separation * 10 + (20 if crossed_up else 0))
-        elif (crossed_down or trending_down) and last_rsi > self.rsi_oversold:
+            strength = min(100.0, 65 + separation * 10)
+        elif crossed_down and last_rsi > self.rsi_oversold:
             signal = Signal.SELL
             separation = abs(last_fast - last_slow) / last_slow * 100 if last_slow else 0
-            strength = min(100.0, 50 + separation * 10 + (20 if crossed_down else 0))
+            strength = min(100.0, 65 + separation * 10)
 
         return TrendReading(
             symbol=symbol, signal=signal, strength=round(strength, 1),

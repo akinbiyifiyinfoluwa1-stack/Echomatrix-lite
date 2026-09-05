@@ -192,28 +192,51 @@ class DerivConnector(BrokerConnector):
         sl: Optional[float] = None, tp: Optional[float] = None,
         comment: str = "EchoMatrix",
     ) -> OrderResult:
+        """`volume` arrives as a traditional position size in units of the
+        underlying (risk_manager sizes it as risk_amount / price_distance,
+        which is correct for a lot-based broker like Binance). Deriv
+        Multipliers don't work that way — you specify a small cash stake
+        and `multiplier` supplies the leverage, with actual exposure =
+        stake * multiplier. Converting: notional = volume * entry_price,
+        stake = notional / multiplier gives the cash stake that produces
+        the same $ risk the risk manager originally sized for."""
         contract_type = "MULTUP" if side == OrderSide.BUY else "MULTDOWN"
-        parameters = {
-            "amount": volume, "basis": "stake", "contract_type": contract_type,
-            "currency": self.currency, "underlying_symbol": symbol, "multiplier": self.multiplier,
-        }
-        if sl or tp:
-            limit_order = {}
-            if sl:
-                limit_order["stop_loss"] = sl
-            if tp:
-                limit_order["take_profit"] = tp
-            parameters["limit_order"] = limit_order
+        info = await self.get_symbol_info(symbol)
+        entry_price = info.ask if side == OrderSide.BUY else info.bid
+        stake = round((volume * entry_price) / self.multiplier, 2) if entry_price else volume
+        stake = max(stake, 1.0)  # Deriv's practical floor for a Multiplier stake
 
-        # Direct buy (no separate proposal step) — the schema allows
-        # `buy: 1` with parameters passed straight through.
-        buy_resp = await self._call({"buy": "1", "price": 0, "parameters": parameters})
-        if "error" in buy_resp:
-            return OrderResult(success=False, order_id=None, filled_price=None,
-                                message=buy_resp["error"].get("message", "buy failed"))
-        b = buy_resp["buy"]
-        return OrderResult(success=True, order_id=str(b["contract_id"]),
-                            filled_price=float(b.get("buy_price", 0)), message="filled")
+        limit_order = {}
+        if sl:
+            limit_order["stop_loss"] = sl
+        if tp:
+            limit_order["take_profit"] = tp
+
+        # Deriv's actual max-purchase-price ceiling isn't published per
+        # symbol/account, so back off by half on that specific error
+        # instead of guessing a hardcoded cap.
+        for attempt in range(5):
+            parameters = {
+                "amount": stake, "basis": "stake", "contract_type": contract_type,
+                "currency": self.currency, "underlying_symbol": symbol, "multiplier": self.multiplier,
+            }
+            if limit_order:
+                parameters["limit_order"] = limit_order
+
+            buy_resp = await self._call({"buy": "1", "price": 0, "parameters": parameters})
+            if "error" not in buy_resp:
+                b = buy_resp["buy"]
+                return OrderResult(success=True, order_id=str(b["contract_id"]),
+                                    filled_price=float(b.get("buy_price", 0)), message="filled")
+
+            err_msg = buy_resp["error"].get("message", "buy failed")
+            if "maximum purchase price" in err_msg.lower() and stake > 1.0:
+                stake = max(round(stake / 2, 2), 1.0)
+                continue
+            return OrderResult(success=False, order_id=None, filled_price=None, message=err_msg)
+
+        return OrderResult(success=False, order_id=None, filled_price=None,
+                            message=f"stake still rejected after backing off to {stake}")
 
     async def close_position(self, position_id: str) -> OrderResult:
         resp = await self._call({"sell": int(position_id), "price": 0})
