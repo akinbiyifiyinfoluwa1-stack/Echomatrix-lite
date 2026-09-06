@@ -63,6 +63,11 @@ async def run_backtest(
     for i in range(MIN_WINDOW, len(candles) - 1):
         window = candles[: i + 1]
         reading = brain.analyze(symbol, window)
+        if reading.signal == Signal.NONE:
+            # Same logic as live scanning: no trend to catch, so try
+            # the complementary ranging-market strategy on the same
+            # window before skipping this candle entirely.
+            reading = brain.analyze_mean_reversion(symbol, window)
         if reading.signal == Signal.NONE or reading.strength < min_signal_strength:
             continue
 

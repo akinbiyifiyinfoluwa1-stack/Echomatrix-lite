@@ -61,8 +61,16 @@ class Scanner:
                 candles = await self.broker.get_candles(
                     symbol, self.config.timeframe, self.config.candle_count
                 )
-                reading = self.brain.analyze(symbol, candles)
-                readings.append(reading)
+                trend_reading = self.brain.analyze(symbol, candles)
+                if trend_reading.signal != Signal.NONE:
+                    readings.append(trend_reading)
+                    continue
+                # No trend to catch — try the complementary ranging-market
+                # strategy on the same candles before giving up on this
+                # symbol entirely. One representative reading per symbol
+                # either way, so breadth doesn't double-count it.
+                mean_rev_reading = self.brain.analyze_mean_reversion(symbol, candles)
+                readings.append(mean_rev_reading if mean_rev_reading.signal != Signal.NONE else trend_reading)
             except Exception as e:
                 logger.warning(f"scan failed for {symbol}: {e}")
 

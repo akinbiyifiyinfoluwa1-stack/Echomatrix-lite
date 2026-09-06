@@ -30,6 +30,7 @@ class TrendReading:
     atr: float
     macd_histogram: float = 0.0
     bb_position: float = 0.0  # 0 = at lower band, 1 = at upper band, 0.5 = middle
+    strategy: str = "trend"   # "trend" (EMA-cross) or "mean_reversion" (range-trading)
 
 
 def _ema(series: pd.Series, period: int) -> pd.Series:
@@ -153,6 +154,63 @@ class QuickBrain:
             trend_ema_fast=round(last_fast, 5), trend_ema_slow=round(last_slow, 5),
             rsi=round(last_rsi, 1), atr=round(last_atr, 5),
             macd_histogram=round(last_macd_hist, 6), bb_position=round(bb_position, 3),
+        )
+
+    def analyze_mean_reversion(self, symbol: str, candles: list[dict],
+                                rsi_extreme_oversold: float = 30, rsi_extreme_overbought: float = 70
+                                ) -> TrendReading:
+        """The EMA-cross strategy above only fires when a trend exists —
+        in a genuinely sideways/ranging market it will correctly produce
+        zero signals forever, since there's no trend to cross into. This
+        is the complementary case: when price pushes to the edge of its
+        own recent volatility range (Bollinger Band) AND RSI confirms a
+        genuine extreme, that's a classic range-trading setup, not a
+        trend-following one. Confirmed with MACD as a 'don't catch a
+        falling knife' check — momentum shouldn't be violently
+        accelerating in the same direction as the extreme."""
+        if len(candles) < self.slow_period + 1:
+            return TrendReading(symbol, Signal.NONE, 0.0, 0.0, 0.0, 50.0, 0.0, strategy="mean_reversion")
+
+        df = pd.DataFrame(candles)
+        closes = df["close"]
+
+        rsi = _rsi(closes, self.rsi_period)
+        atr = _atr(df, self.rsi_period)
+        _, _, macd_hist = _macd(closes)
+        bb_upper, bb_mid, bb_lower = _bollinger_bands(closes)
+        ema_fast = _ema(closes, self.fast_period)
+        ema_slow = _ema(closes, self.slow_period)
+
+        last_close = closes.iloc[-1]
+        last_rsi = rsi.iloc[-1] if not np.isnan(rsi.iloc[-1]) else 50.0
+        last_atr = atr.iloc[-1] if not np.isnan(atr.iloc[-1]) else 0.0
+        last_macd_hist = macd_hist.iloc[-1] if not np.isnan(macd_hist.iloc[-1]) else 0.0
+        band_width = bb_upper.iloc[-1] - bb_lower.iloc[-1]
+        bb_position = ((last_close - bb_lower.iloc[-1]) / band_width
+                        if band_width and not np.isnan(band_width) else 0.5)
+
+        signal = Signal.NONE
+        strength = 0.0
+
+        # Oversold bounce: price at/below the lower band, RSI genuinely
+        # oversold, and momentum not still accelerating downward hard
+        # (a deeply negative, worsening MACD histogram alongside an
+        # oversold RSI is more often a real breakdown than a bounce).
+        if last_close <= bb_lower.iloc[-1] and last_rsi < rsi_extreme_oversold and last_macd_hist > -abs(last_atr):
+            signal = Signal.BUY
+            depth = (rsi_extreme_oversold - last_rsi) / rsi_extreme_oversold * 100
+            strength = min(100.0, 65 + depth * 0.5)
+        elif last_close >= bb_upper.iloc[-1] and last_rsi > rsi_extreme_overbought and last_macd_hist < abs(last_atr):
+            signal = Signal.SELL
+            depth = (last_rsi - rsi_extreme_overbought) / (100 - rsi_extreme_overbought) * 100
+            strength = min(100.0, 65 + depth * 0.5)
+
+        return TrendReading(
+            symbol=symbol, signal=signal, strength=round(strength, 1),
+            trend_ema_fast=round(ema_fast.iloc[-1], 5), trend_ema_slow=round(ema_slow.iloc[-1], 5),
+            rsi=round(last_rsi, 1), atr=round(last_atr, 5),
+            macd_histogram=round(last_macd_hist, 6), bb_position=round(bb_position, 3),
+            strategy="mean_reversion",
         )
 
     def rank_opportunities(self, readings: list[TrendReading], min_strength: float = 60.0) -> list[TrendReading]:
