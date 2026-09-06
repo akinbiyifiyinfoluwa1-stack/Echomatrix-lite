@@ -28,6 +28,8 @@ class TrendReading:
     trend_ema_slow: float
     rsi: float
     atr: float
+    macd_histogram: float = 0.0
+    bb_position: float = 0.0  # 0 = at lower band, 1 = at upper band, 0.5 = middle
 
 
 def _ema(series: pd.Series, period: int) -> pd.Series:
@@ -63,6 +65,25 @@ def _atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.rolling(period).mean()
 
 
+def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal_period: int = 9):
+    """Standard MACD: its own fast/slow EMAs (not reused from the
+    trend-cross EMAs above — MACD's usual periods happen to match
+    QuickBrain's, but keeping them as separate calls avoids silently
+    coupling the two if either gets tuned later)."""
+    macd_line = _ema(series, fast) - _ema(series, slow)
+    signal_line = _ema(macd_line, signal_period)
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+
+def _bollinger_bands(series: pd.Series, period: int = 20, num_std: float = 2.0):
+    middle = series.rolling(period).mean()
+    std = series.rolling(period).std()
+    upper = middle + num_std * std
+    lower = middle - num_std * std
+    return upper, middle, lower
+
+
 class QuickBrain:
     """Fast EMA-cross + RSI filter trend engine, run per symbol per scan."""
 
@@ -86,11 +107,19 @@ class QuickBrain:
         ema_slow = _ema(closes, self.slow_period)
         rsi = _rsi(closes, self.rsi_period)
         atr = _atr(df, self.rsi_period)
+        _, _, macd_hist = _macd(closes)
+        bb_upper, bb_mid, bb_lower = _bollinger_bands(closes)
 
         last_fast, prev_fast = ema_fast.iloc[-1], ema_fast.iloc[-2]
         last_slow, prev_slow = ema_slow.iloc[-1], ema_slow.iloc[-2]
         last_rsi = rsi.iloc[-1] if not np.isnan(rsi.iloc[-1]) else 50.0
         last_atr = atr.iloc[-1] if not np.isnan(atr.iloc[-1]) else 0.0
+        last_close = closes.iloc[-1]
+        last_macd_hist = macd_hist.iloc[-1] if not np.isnan(macd_hist.iloc[-1]) else 0.0
+
+        band_width = bb_upper.iloc[-1] - bb_lower.iloc[-1]
+        bb_position = ((last_close - bb_lower.iloc[-1]) / band_width
+                        if band_width and not np.isnan(band_width) else 0.5)
 
         crossed_up = prev_fast <= prev_slow and last_fast > last_slow
         crossed_down = prev_fast >= prev_slow and last_fast < last_slow
@@ -98,16 +127,23 @@ class QuickBrain:
         signal = Signal.NONE
         strength = 0.0
 
-        # Only fire on the actual moment the cross happens — not on
-        # every scan for as long as the trend continues afterward.
-        # The previous logic ("crossed_up or trending_up") kept
-        # re-signaling BUY hours into an already-extended move, which
-        # is how you end up buying right before a reversal.
-        if crossed_up and last_rsi < self.rsi_overbought:
+        # A fresh EMA cross alone used to be enough to signal. Now it's
+        # only the first of three checks that all have to agree:
+        # RSI not already extreme, MACD histogram confirming the same
+        # direction (an independent momentum measure, not derived from
+        # the same crossover), and price not already pinned against the
+        # Bollinger Band on that side (which would mean the move is
+        # already extended relative to its own recent volatility).
+        # Requiring genuine agreement across unrelated indicators is
+        # what actually improves signal quality — a lone crossover is
+        # cheap to get and easy to get wrong.
+        if (crossed_up and last_rsi < self.rsi_overbought
+                and last_macd_hist > 0 and bb_position < 0.95):
             signal = Signal.BUY
             separation = abs(last_fast - last_slow) / last_slow * 100 if last_slow else 0
             strength = min(100.0, 65 + separation * 10)
-        elif crossed_down and last_rsi > self.rsi_oversold:
+        elif (crossed_down and last_rsi > self.rsi_oversold
+                and last_macd_hist < 0 and bb_position > 0.05):
             signal = Signal.SELL
             separation = abs(last_fast - last_slow) / last_slow * 100 if last_slow else 0
             strength = min(100.0, 65 + separation * 10)
@@ -116,6 +152,7 @@ class QuickBrain:
             symbol=symbol, signal=signal, strength=round(strength, 1),
             trend_ema_fast=round(last_fast, 5), trend_ema_slow=round(last_slow, 5),
             rsi=round(last_rsi, 1), atr=round(last_atr, 5),
+            macd_histogram=round(last_macd_hist, 6), bb_position=round(bb_position, 3),
         )
 
     def rank_opportunities(self, readings: list[TrendReading], min_strength: float = 60.0) -> list[TrendReading]:
