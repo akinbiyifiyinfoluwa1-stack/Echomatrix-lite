@@ -383,15 +383,23 @@ async function loadTradeHistory() {
       tbody.innerHTML = `<tr><td colspan="4" class="empty-row">No trades yet</td></tr>`;
       return;
     }
-    tbody.innerHTML = rows.map(r => `
+    tbody.innerHTML = rows.map(r => {
+      const resultLabel = !r.success ? "declined"
+        : r.closed ? `closed (${r.pnl >= 0 ? "+" : ""}${r.pnl.toFixed(2)})`
+        : "open";
+      const resultColor = !r.success ? "var(--danger)"
+        : r.closed ? (r.pnl >= 0 ? "var(--ok)" : "var(--danger)")
+        : "var(--muted)";
+      return `
       <tr>
         <td>${r.symbol}<br><span style="font-size:11px;color:var(--muted)">SL ${fmt(r.stop_loss)} · TP ${fmt(r.take_profit)}</span></td>
         <td class="${r.side === 'buy' ? 'pill-buy' : 'pill-sell'}">${r.side}</td>
         <td>${r.triggered_by}</td>
-        <td style="color:${r.success ? 'var(--ok)' : 'var(--danger)'}">${r.success ? 'placed' : 'declined'}</td>
+        <td style="color:${resultColor}">${resultLabel}</td>
       </tr>
       <tr><td colspan="4" style="font-size:11px;color:var(--muted);padding-top:0;border-top:none;">${r.message || ''}</td></tr>
-    `).join("");
+    `;
+    }).join("");
   } catch (e) {
     tbody.innerHTML = `<tr><td colspan="4" class="empty-row">Couldn't load history</td></tr>`;
   }

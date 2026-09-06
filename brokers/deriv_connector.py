@@ -312,3 +312,27 @@ class DerivConnector(BrokerConnector):
              "low": float(c["low"]), "close": float(c["close"]), "volume": 0}
             for c in all_candles if c["epoch"] >= cutoff
         ], key=lambda c: c["time"])
+
+    async def get_closed_outcome(self, contract_id: str, symbol: str = "") -> dict | None:
+        """Look up the real outcome of a contract that's no longer in
+        open positions, via Deriv's profit_table — the one clean way
+        to get a definitive buy/sell price and profit for a specific
+        contract after it's closed. Returns None if it's not found
+        there yet (still settling) or was never a real contract."""
+        try:
+            resp = await self._call({
+                "profit_table": 1, "limit": 50, "sort": "DESC",
+            })
+        except Exception:
+            return None
+        transactions = resp.get("profit_table", {}).get("transactions", [])
+        match = next((t for t in transactions if str(t.get("contract_id")) == str(contract_id)), None)
+        if not match:
+            return None
+        buy_price = float(match.get("buy_price", 0))
+        sell_price = float(match.get("sell_price", 0))
+        return {
+            "close_price": sell_price,
+            "pnl": round(sell_price - buy_price, 2),
+            "closed_at": match.get("sell_time"),
+        }

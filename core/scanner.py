@@ -249,6 +249,9 @@ class Scanner:
                 else:
                     ranked = await self.scan_once()
                     logger.info(f"scan complete: {len(ranked)} actionable signals")
+
+                from core.reconciliation import reconcile_broker
+                await reconcile_broker(self.broker)
             except Exception as e:
                 logger.error(f"scan cycle error: {e}")
             await asyncio.sleep(self.config.scan_interval_seconds)

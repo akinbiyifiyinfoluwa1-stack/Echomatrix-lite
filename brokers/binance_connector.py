@@ -262,3 +262,42 @@ class BinanceConnector(BrokerConnector):
              "low": float(k[3]), "close": float(k[4]), "volume": float(k[5])}
             for k in klines
         ]
+
+    async def get_closed_outcome(self, order_id: str, symbol: str) -> dict | None:
+        """Best-effort only: Binance spot has no real 'position' concept
+        (a buy order and its later sell are just two independent trades),
+        so there's no clean API call linking an entry order to its exit
+        the way Deriv's profit_table does. This looks up the entry order
+        by ID to get its quantity, then searches recent trades on that
+        symbol for a matching opposite-side fill of the same quantity
+        placed after the entry. On a symbol with frequent manual or
+        overlapping trades this can mismatch — treat this as a
+        reasonable guess, not a verified outcome the way Deriv's is."""
+        try:
+            order = await self._signed(lambda: self.client.get_order(symbol=symbol, orderId=int(order_id)))
+        except Exception:
+            return None
+        entry_qty = float(order.get("executedQty", 0))
+        entry_side = order.get("side")
+        entry_time = order.get("time", 0)
+        if entry_qty == 0:
+            return None
+
+        try:
+            trades = await self._signed(lambda: self.client.get_my_trades(symbol=symbol, startTime=entry_time))
+        except Exception:
+            return None
+
+        opposite_side = "SELL" if entry_side == "BUY" else "BUY"
+        candidates = [t for t in trades if t.get("time", 0) > entry_time
+                      and (t.get("isBuyer") and opposite_side == "BUY"
+                           or not t.get("isBuyer") and opposite_side == "SELL")]
+        match = next((t for t in candidates if abs(float(t.get("qty", 0)) - entry_qty) < entry_qty * 0.01), None)
+        if not match:
+            return None
+
+        entry_price = float(order.get("price", 0)) or float(order.get("cummulativeQuoteQty", 0)) / entry_qty
+        close_price = float(match.get("price", 0))
+        pnl = (close_price - entry_price) * entry_qty if entry_side == "BUY" else (entry_price - close_price) * entry_qty
+        return {"close_price": close_price, "pnl": round(pnl, 4),
+                "closed_at": match.get("time", 0) / 1000}

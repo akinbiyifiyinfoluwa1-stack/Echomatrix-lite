@@ -46,6 +46,18 @@ async def init_db() -> bool:
         await conn.execute(text(
             "ALTER TABLE trade_executions ADD COLUMN IF NOT EXISTS take_profit FLOAT DEFAULT 0"
         ))
+        await conn.execute(text(
+            "ALTER TABLE trade_executions ADD COLUMN IF NOT EXISTS closed BOOLEAN DEFAULT false"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE trade_executions ADD COLUMN IF NOT EXISTS close_price FLOAT DEFAULT 0"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE trade_executions ADD COLUMN IF NOT EXISTS pnl FLOAT DEFAULT 0"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE trade_executions ADD COLUMN IF NOT EXISTS closed_at TIMESTAMP"
+        ))
     return True
 
 

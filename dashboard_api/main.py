@@ -364,9 +364,20 @@ async def trade_history(limit: int = 30):
              "take_profit": r.take_profit,
              "signal_strength": r.signal_strength, "triggered_by": r.triggered_by,
              "order_id": r.order_id, "success": r.success, "message": r.message,
+             "closed": r.closed, "close_price": r.close_price, "pnl": r.pnl,
              "created_at": r.created_at.isoformat()}
             for r in rows
         ]
+
+
+@app.post("/{broker_name}/trades/reconcile")
+async def reconcile_now(broker_name: str):
+    """Manually trigger a reconciliation pass right now instead of
+    waiting for the next scan cycle — checks every unresolved trade
+    against the broker's own record of what actually happened."""
+    broker = get_broker(broker_name)
+    from core.reconciliation import reconcile_broker
+    return await reconcile_broker(broker)
 
 
 @app.get("/{broker_name}/account")

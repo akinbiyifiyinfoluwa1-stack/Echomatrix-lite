@@ -78,6 +78,10 @@ class TradeExecution(Base):
     success: Mapped[bool] = mapped_column(default=False)
     message: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    closed: Mapped[bool] = mapped_column(default=False)
+    close_price: Mapped[float] = mapped_column(Float, default=0)
+    pnl: Mapped[float] = mapped_column(Float, default=0)
+    closed_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
 
 
 class MemoryEpisode(Base):
