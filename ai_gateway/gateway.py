@@ -117,7 +117,14 @@ class AIGateway:
             f"RSI: {context['rsi']}\n"
             f"Trend signal strength (0-100): {context['strength']}\n"
             f"Proposed position size: {context['volume']}\n"
-            f"Account equity: {context['equity']}\n\n"
+            f"Account equity: {context['equity']}\n"
+            f"Broader market context: {context.get('market_breadth', 'not available')}\n"
+            f"Does the wider market lean the same direction as this signal? "
+            f"{context.get('breadth_agrees', 'unknown')}\n\n"
+            "The market breadth line reflects every other symbol scanned this "
+            "pass, not just this one — weigh it as context (a lone signal "
+            "against strongly opposing breadth deserves more scrutiny), not "
+            "as an automatic veto.\n\n"
             "Reply with ONLY a JSON object, no markdown fences, no other text:\n"
             '{"approve": true or false, "confidence": 0-100, "note": "one short sentence"}'
         )

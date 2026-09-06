@@ -480,6 +480,17 @@ async def scan_status(broker_name: str):
             "interval_seconds": scanner.config.scan_interval_seconds}
 
 
+@app.get("/{broker_name}/breadth")
+async def market_breadth(broker_name: str):
+    """Current market breadth from the last scan pass — what fraction
+    of everything scanned is bullish vs bearish right now. Empty/zero
+    until at least one scan has run."""
+    scanner = get_scanner(broker_name)
+    b = scanner.last_breadth
+    return {"total_scanned": b.total_scanned, "bullish": b.bullish, "bearish": b.bearish,
+            "neutral": b.neutral, "breadth_score": b.breadth_score, "description": b.describe()}
+
+
 @app.post("/{broker_name}/scan/start")
 async def start_scan_loop(broker_name: str, auto_execute: bool = False):
     """Start the continuous background scan loop for this broker.

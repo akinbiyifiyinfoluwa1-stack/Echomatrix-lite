@@ -19,6 +19,7 @@ from risk.risk_manager import RiskManager
 from db.database import SessionLocal
 from db.models import TradeExecution, MemoryEpisode
 from ai_gateway.gateway import gateway as ai_gateway
+from core.world_model import compute_breadth, MarketBreadth
 
 logger = logging.getLogger("echomatrix.scanner")
 
@@ -47,6 +48,7 @@ class Scanner:
         self.risk = risk
         self.config = config
         self.last_readings: list[TrendReading] = []
+        self.last_breadth: MarketBreadth = MarketBreadth(0, 0, 0, 0, 0.0)
         self._running = False
 
     async def scan_once(self) -> list[TrendReading]:
@@ -65,6 +67,7 @@ class Scanner:
                 logger.warning(f"scan failed for {symbol}: {e}")
 
         self.last_readings = readings
+        self.last_breadth = compute_breadth(readings)
         ranked = self.brain.rank_opportunities(readings, self.config.min_signal_strength)
 
         if self.config.auto_execute and ranked:
@@ -169,6 +172,8 @@ class Scanner:
                 "sl": stop, "tp": take_profit, "atr": reading.atr, "rsi": reading.rsi,
                 "strength": reading.strength, "volume": decision.suggested_volume,
                 "equity": account.equity,
+                "market_breadth": self.last_breadth.describe(),
+                "breadth_agrees": self.last_breadth.agrees_with(reading.signal),
             })
             review_note = f" | AI ({review['provider']}, {review['confidence']:.0f}% confidence): {review['note']}"
             if not review["approve"]:

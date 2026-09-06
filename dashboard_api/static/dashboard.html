@@ -69,6 +69,13 @@
 
   <div class="card">
     <div class="card-header">
+      <div class="card-title">Market Breadth</div>
+    </div>
+    <div id="breadth-text" class="hint" style="padding-top:0;">No scan run yet this session.</div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
       <div class="card-title">Quick Brain Scanner</div>
       <button class="close-btn" id="run-scan-btn" style="color:var(--accent);border-color:var(--accent);">Scan Now</button>
     </div>
@@ -137,6 +144,19 @@ function updateLiveDashboard(statusBrokers) {
     refreshAccount();
     refreshPositions();
     refreshAutoTradeStatus();
+    refreshBreadth();
+  }
+}
+
+async function refreshBreadth() {
+  if (!currentBroker) return;
+  const el = document.getElementById("breadth-text");
+  try {
+    const resp = await fetch(`/${currentBroker}/breadth`);
+    const data = await resp.json();
+    el.textContent = data.total_scanned > 0 ? data.description : "No scan run yet this session.";
+  } catch (e) {
+    // leave last-known state on screen
   }
 }
 
@@ -145,6 +165,7 @@ document.getElementById("live-broker-select").addEventListener("change", (e) => 
   refreshAccount();
   refreshPositions();
   refreshAutoTradeStatus();
+  refreshBreadth();
 });
 
 async function refreshAccount() {
@@ -271,6 +292,7 @@ document.getElementById("run-scan-btn").addEventListener("click", async () => {
   try {
     const resp = await fetch(`/${currentBroker}/scan`, { method: "POST" });
     const ranked = await resp.json();
+    refreshBreadth();
     if (!ranked.length) {
       tbody.innerHTML = `<tr><td colspan="4" class="empty-row">No signals found this pass</td></tr>`;
       return;
