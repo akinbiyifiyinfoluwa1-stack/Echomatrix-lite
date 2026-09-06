@@ -17,7 +17,7 @@ from brokers.base import BrokerConnector, OrderSide, OrderResult
 from strategies.quick_brain import QuickBrain, Signal, TrendReading
 from risk.risk_manager import RiskManager
 from db.database import SessionLocal
-from db.models import TradeExecution
+from db.models import TradeExecution, MemoryEpisode
 from ai_gateway.gateway import gateway as ai_gateway
 
 logger = logging.getLogger("echomatrix.scanner")
@@ -34,6 +34,9 @@ class ScannerConfig:
     stop_atr_multiplier: float = 1.5    # SL distance = ATR * this
     reward_risk_ratio: float = 1.5      # TP distance = SL distance * this
     ai_review_enabled: bool = True      # send each risk-cleared setup to Gemini/Groq for a second opinion
+    learning_gate_enabled: bool = True  # let backtest track record veto auto-trades on a symbol
+    min_backtest_trades: int = 10       # need at least this many backtested trades before trusting the win rate
+    min_backtest_win_rate: float = 40.0 # below this, auto-trading skips the symbol regardless of live signal
 
 
 class Scanner:
@@ -69,6 +72,21 @@ class Scanner:
 
         return ranked
 
+    async def _log_lesson(self, situation: str, decision: str, outcome: str, lesson: str) -> None:
+        """Write to the episodic memory table — situation, decision,
+        outcome, lesson. This is what makes the learning gate's
+        decisions visible and auditable instead of a silent skip."""
+        if not SessionLocal:
+            return
+        try:
+            async with SessionLocal() as session:
+                session.add(MemoryEpisode(
+                    situation=situation, decision=decision, outcome=outcome, lesson=lesson,
+                ))
+                await session.commit()
+        except Exception as e:
+            logger.warning(f"memory episode write failed: {e}")
+
     async def _log_trade(self, symbol: str, side: str, volume: float, entry: float,
                           stop: float, strength: float, triggered_by: str,
                           success: bool, message: str, order_id: str = "", tp: float = 0.0) -> None:
@@ -93,6 +111,26 @@ class Scanner:
         auto-trade loop and a manual 'trade this' tap use the exact same
         path — no separate/looser logic for manual trades. Every attempt,
         successful or not, is written to the trade journal."""
+        if triggered_by == "auto" and self.config.learning_gate_enabled:
+            from core.backtest import get_symbol_reliability
+            reliability = await get_symbol_reliability(
+                self.broker.name, reading.symbol, self.config.timeframe,
+            )
+            if (reliability["has_track_record"]
+                    and reliability["trades"] >= self.config.min_backtest_trades
+                    and reliability["win_rate"] < self.config.min_backtest_win_rate):
+                reason = (f"backtested win rate {reliability['win_rate']}% over "
+                          f"{reliability['trades']} trades is below the "
+                          f"{self.config.min_backtest_win_rate}% bar for auto-trading")
+                logger.info(f"skip {reading.symbol}: {reason}")
+                await self._log_lesson(
+                    situation=f"{reading.symbol} signaled {reading.signal.value} for auto-trading",
+                    decision="declined — poor backtest track record",
+                    outcome=str(reliability),
+                    lesson=reason,
+                )
+                return None
+
         symbol_info = await self.broker.get_symbol_info(reading.symbol)
         side = OrderSide.BUY if reading.signal == Signal.BUY else OrderSide.SELL
         entry = symbol_info.ask if side == OrderSide.BUY else symbol_info.bid

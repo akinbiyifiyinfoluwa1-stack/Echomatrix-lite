@@ -65,6 +65,19 @@
   </table>
 </div>
 
+<div class="card">
+  <div class="card-header">
+    <div class="card-title">What It's Learned</div>
+    <button class="close-btn" id="refresh-memory-btn" style="color:var(--muted);border-color:var(--border);">Refresh</button>
+  </div>
+  <div class="hint" style="padding-top:0;">
+    Symbols the auto-trade loop has skipped based on a poor backtested
+    track record — even if the live signal looked fine. Manual trades
+    aren't affected by this; it only gates auto-trading.
+  </div>
+  <div id="memory-list"></div>
+</div>
+
 <div class="section-title">Research Engine</div>
 <div class="card">
   <label for="research-q">Ask a market question</label>
@@ -370,8 +383,32 @@ async function loadBacktestHistory() {
 
 document.getElementById("refresh-backtest-btn").addEventListener("click", loadBacktestHistory);
 
+async function loadMemoryEpisodes() {
+  const el = document.getElementById("memory-list");
+  try {
+    const resp = await fetch("/memory/episodes?limit=20");
+    const rows = await resp.json();
+    if (!resp.ok || !rows.length) {
+      el.innerHTML = `<div class="hint">Nothing skipped yet — auto-trading hasn't run into a poor track record.</div>`;
+      return;
+    }
+    el.innerHTML = rows.map(r => `
+      <div style="padding:10px 0;border-top:1px solid var(--border);">
+        <div style="font-size:13px;">${r.situation}</div>
+        <div style="font-size:12px;color:var(--danger);margin-top:2px;">${r.decision}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px;">${r.lesson}</div>
+      </div>
+    `).join("");
+  } catch (e) {
+    el.innerHTML = `<div class="hint">Couldn't load.</div>`;
+  }
+}
+
+document.getElementById("refresh-memory-btn").addEventListener("click", loadMemoryEpisodes);
+
 populateHistBrokerSelect();
 loadBacktestHistory();
+loadMemoryEpisodes();
 </script>
 
 </body>

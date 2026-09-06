@@ -329,6 +329,25 @@ async def backtest_history(limit: int = 30):
         ]
 
 
+@app.get("/memory/episodes")
+async def memory_episodes(limit: int = 30):
+    """What the learning gate has actually decided and why — the audit
+    trail for every symbol it's blocked from auto-trading (or cleared)
+    based on backtested track record."""
+    if not SessionLocal:
+        raise HTTPException(400, "database not configured")
+    from db.models import MemoryEpisode
+    async with SessionLocal() as session:
+        rows = (await session.execute(
+            select(MemoryEpisode).order_by(MemoryEpisode.id.desc()).limit(limit)
+        )).scalars().all()
+        return [
+            {"id": r.id, "situation": r.situation, "decision": r.decision,
+             "outcome": r.outcome, "lesson": r.lesson, "created_at": r.created_at.isoformat()}
+            for r in rows
+        ]
+
+
 @app.get("/trades/history")
 async def trade_history(limit: int = 30):
     """Every real order EchoMatrix has attempted — manual or auto-traded,

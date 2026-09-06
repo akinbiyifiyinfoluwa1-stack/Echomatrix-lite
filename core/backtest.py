@@ -113,3 +113,33 @@ async def run_backtest(
             logger.warning(f"backtest result write failed (result itself was computed fine): {e}")
 
     return result
+
+
+async def get_symbol_reliability(broker_name: str, symbol: str, timeframe: str,
+                                  lookback_runs: int = 5) -> dict:
+    """Aggregate the most recent backtest runs for one symbol into a
+    single reliability read: enough of a track record to trust, or
+    not yet, and if there is one, whether it's actually been decent.
+    This is the piece the live scanner checks before trusting a symbol
+    with real capital — the whole point of practicing on history."""
+    if not SessionLocal:
+        return {"has_track_record": False, "trades": 0, "win_rate": None, "pnl_pct": None}
+
+    async with SessionLocal() as session:
+        rows = (await session.execute(
+            select(BacktestRun)
+            .where(BacktestRun.broker == broker_name, BacktestRun.symbol == symbol,
+                   BacktestRun.timeframe == timeframe)
+            .order_by(BacktestRun.id.desc())
+            .limit(lookback_runs)
+        )).scalars().all()
+
+    if not rows:
+        return {"has_track_record": False, "trades": 0, "win_rate": None, "pnl_pct": None}
+
+    total_trades = sum(r.trades for r in rows)
+    total_wins = sum(r.wins for r in rows)
+    total_pnl = sum(r.pnl_pct for r in rows)
+    win_rate = (total_wins / total_trades * 100) if total_trades else 0.0
+    return {"has_track_record": True, "trades": total_trades,
+            "win_rate": round(win_rate, 1), "pnl_pct": round(total_pnl, 2)}
