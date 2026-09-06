@@ -144,6 +144,14 @@ async def settings_page():
     )
 
 
+@app.get("/performance", response_class=HTMLResponse)
+async def performance_page():
+    return FileResponse(
+        STATIC_DIR / "performance.html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
 @app.get("/api/status")
 async def api_status():
     stored = creds_store.get_all()
@@ -327,6 +335,78 @@ async def backtest_history(limit: int = 30):
              "created_at": r.created_at.isoformat()}
             for r in rows
         ]
+
+
+@app.get("/performance/summary")
+async def performance_summary():
+    """Ties together everything the system has actually done: real
+    trade outcomes (from reconciliation) and backtested track records,
+    overall and per-symbol. This is the honest scoreboard — not a
+    projection, just what's actually happened so far."""
+    if not SessionLocal:
+        raise HTTPException(400, "database not configured")
+    from db.models import BacktestRun
+    from sqlalchemy import func
+
+    async with SessionLocal() as session:
+        total_attempted = (await session.execute(
+            select(func.count(TradeExecution.id))
+        )).scalar() or 0
+        total_placed = (await session.execute(
+            select(func.count(TradeExecution.id)).where(TradeExecution.success == True)  # noqa: E712
+        )).scalar() or 0
+        total_declined = total_attempted - total_placed
+        closed_rows = (await session.execute(
+            select(TradeExecution).where(
+                TradeExecution.success == True, TradeExecution.closed == True  # noqa: E712
+            )
+        )).scalars().all()
+        open_count = (await session.execute(
+            select(func.count(TradeExecution.id)).where(
+                TradeExecution.success == True, TradeExecution.closed == False  # noqa: E712
+            )
+        )).scalar() or 0
+
+        live_wins = sum(1 for r in closed_rows if r.pnl > 0)
+        live_total_pnl = sum(r.pnl for r in closed_rows)
+        live_win_rate = round(live_wins / len(closed_rows) * 100, 1) if closed_rows else None
+
+        per_symbol: dict[str, dict] = {}
+        for r in closed_rows:
+            s = per_symbol.setdefault(r.symbol, {"closed_trades": 0, "wins": 0, "pnl": 0.0})
+            s["closed_trades"] += 1
+            s["wins"] += 1 if r.pnl > 0 else 0
+            s["pnl"] += r.pnl
+
+        backtest_rows = (await session.execute(select(BacktestRun))).scalars().all()
+        backtest_by_symbol: dict[str, dict] = {}
+        for r in backtest_rows:
+            s = backtest_by_symbol.setdefault(r.symbol, {"trades": 0, "wins": 0, "pnl_pct": 0.0})
+            s["trades"] += r.trades
+            s["wins"] += r.wins
+            s["pnl_pct"] += r.pnl_pct
+
+        symbols = sorted(set(per_symbol) | set(backtest_by_symbol))
+        breakdown = []
+        for sym in symbols:
+            live = per_symbol.get(sym, {"closed_trades": 0, "wins": 0, "pnl": 0.0})
+            bt = backtest_by_symbol.get(sym, {"trades": 0, "wins": 0, "pnl_pct": 0.0})
+            breakdown.append({
+                "symbol": sym,
+                "live_closed_trades": live["closed_trades"],
+                "live_win_rate": round(live["wins"] / live["closed_trades"] * 100, 1) if live["closed_trades"] else None,
+                "live_pnl": round(live["pnl"], 2),
+                "backtest_trades": bt["trades"],
+                "backtest_win_rate": round(bt["wins"] / bt["trades"] * 100, 1) if bt["trades"] else None,
+                "backtest_pnl_pct": round(bt["pnl_pct"], 2),
+            })
+
+    return {
+        "total_attempted": total_attempted, "total_placed": total_placed,
+        "total_declined": total_declined, "open_trades": open_count,
+        "closed_trades": len(closed_rows), "live_win_rate": live_win_rate,
+        "live_total_pnl": round(live_total_pnl, 2), "by_symbol": breakdown,
+    }
 
 
 @app.get("/memory/episodes")

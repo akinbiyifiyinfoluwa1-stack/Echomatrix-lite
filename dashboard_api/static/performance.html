@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>EchoMatrix — Performance</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<h1>EchoMatrix</h1>
+<div class="sub">The honest scoreboard — what's actually happened</div>
+
+<div class="nav-bar">
+  <a class="nav-link" href="/">Dashboard</a>
+  <a class="nav-link active" href="/performance">Performance</a>
+  <a class="nav-link" href="/settings">Brokers & Settings</a>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div class="card-title">Overview</div>
+    <button class="close-btn" id="refresh-perf-btn" style="color:var(--muted);border-color:var(--border);">Refresh</button>
+  </div>
+  <div class="stat-grid">
+    <div class="stat"><div class="label">Trades Attempted</div><div class="value" id="stat-attempted">—</div></div>
+    <div class="stat"><div class="label">Placed</div><div class="value" id="stat-placed">—</div></div>
+    <div class="stat"><div class="label">Open</div><div class="value" id="stat-open">—</div></div>
+    <div class="stat"><div class="label">Closed</div><div class="value" id="stat-closed">—</div></div>
+    <div class="stat"><div class="label">Live Win Rate</div><div class="value" id="stat-winrate">—</div></div>
+    <div class="stat"><div class="label">Live Total P/L</div><div class="value" id="stat-pnl">—</div></div>
+  </div>
+  <div class="hint" id="perf-hint" style="display:none;">
+    No closed trades yet — this fills in once trades actually resolve (SL/TP hit, or closed manually) and reconciliation picks them up.
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div class="card-title">Live vs Backtest, by Symbol</div>
+  </div>
+  <table id="perf-table">
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>Live (n, win%, P/L)</th>
+        <th>Backtest (n, win%, P/L%)</th>
+      </tr>
+    </thead>
+    <tbody><tr><td colspan="3" class="empty-row">No data yet</td></tr></tbody>
+  </table>
+</div>
+
+<script>
+async function loadPerformance() {
+  try {
+    const resp = await fetch("/performance/summary");
+    const data = await resp.json();
+    if (!resp.ok) {
+      document.getElementById("perf-hint").style.display = "block";
+      document.getElementById("perf-hint").textContent = data.detail || "Couldn't load performance data.";
+      return;
+    }
+    document.getElementById("stat-attempted").textContent = data.total_attempted;
+    document.getElementById("stat-placed").textContent = data.total_placed;
+    document.getElementById("stat-open").textContent = data.open_trades;
+    document.getElementById("stat-closed").textContent = data.closed_trades;
+    document.getElementById("stat-winrate").textContent = data.live_win_rate !== null ? `${data.live_win_rate}%` : "—";
+    document.getElementById("stat-pnl").textContent = data.live_total_pnl;
+
+    const hint = document.getElementById("perf-hint");
+    hint.style.display = data.closed_trades === 0 ? "block" : "none";
+
+    const tbody = document.querySelector("#perf-table tbody");
+    if (!data.by_symbol.length) {
+      tbody.innerHTML = `<tr><td colspan="3" class="empty-row">No data yet</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = data.by_symbol.map(s => `
+      <tr>
+        <td>${s.symbol}</td>
+        <td>${s.live_closed_trades ? `${s.live_closed_trades}, ${s.live_win_rate}%, ${s.live_pnl >= 0 ? "+" : ""}${s.live_pnl}` : "—"}</td>
+        <td>${s.backtest_trades ? `${s.backtest_trades}, ${s.backtest_win_rate}%, ${s.backtest_pnl_pct >= 0 ? "+" : ""}${s.backtest_pnl_pct}%` : "—"}</td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    document.getElementById("perf-hint").style.display = "block";
+    document.getElementById("perf-hint").textContent = "Network error loading performance data.";
+  }
+}
+
+document.getElementById("refresh-perf-btn").addEventListener("click", loadPerformance);
+loadPerformance();
+</script>
+
+</body>
+</html>
