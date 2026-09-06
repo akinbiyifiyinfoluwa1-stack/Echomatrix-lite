@@ -22,20 +22,31 @@ logger = logging.getLogger("echomatrix.historical")
 
 async def store_candles(broker_name: str, symbol: str, timeframe: str, candles: list[dict]) -> int:
     """Upsert candles, skipping any that already exist. Returns how
-    many rows were newly inserted."""
+    many rows were newly inserted.
+
+    Each row binds 9 parameters, and Postgres/asyncpg caps a single
+    query at 32767 total parameters — a few years of candles easily
+    exceeds that in one INSERT, which fails the whole batch outright
+    (not just the overflow rows). Chunking keeps every batch safely
+    under the limit regardless of how much history is requested."""
     if not SessionLocal or not candles:
         return 0
+    chunk_size = 2000  # 2000 * 9 = 18000 params — well under the 32767 cap
+    inserted = 0
     async with SessionLocal() as session:
-        stmt = pg_insert(MarketCandle).values([
-            {"broker": broker_name, "symbol": symbol, "timeframe": timeframe,
-             "time": c["time"], "open": c["open"], "high": c["high"],
-             "low": c["low"], "close": c["close"], "volume": c.get("volume", 0)}
-            for c in candles
-        ])
-        stmt = stmt.on_conflict_do_nothing(index_elements=["broker", "symbol", "timeframe", "time"])
-        result = await session.execute(stmt)
+        for i in range(0, len(candles), chunk_size):
+            chunk = candles[i:i + chunk_size]
+            stmt = pg_insert(MarketCandle).values([
+                {"broker": broker_name, "symbol": symbol, "timeframe": timeframe,
+                 "time": c["time"], "open": c["open"], "high": c["high"],
+                 "low": c["low"], "close": c["close"], "volume": c.get("volume", 0)}
+                for c in chunk
+            ])
+            stmt = stmt.on_conflict_do_nothing(index_elements=["broker", "symbol", "timeframe", "time"])
+            result = await session.execute(stmt)
+            inserted += result.rowcount or 0
         await session.commit()
-        return result.rowcount or 0
+    return inserted
 
 
 async def download_history(broker, symbol: str, timeframe: str = "H1", years_back: int = 5) -> dict:
