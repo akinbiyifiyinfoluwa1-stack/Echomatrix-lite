@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from sqlalchemy import select
+from sqlalchemy import select, Integer
 
 from brokers.base import BrokerConnector, OrderSide, OrderType
 from brokers.binance_connector import BinanceConnector
