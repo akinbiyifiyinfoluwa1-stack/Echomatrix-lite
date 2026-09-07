@@ -63,6 +63,7 @@ class DerivConnector(BrokerConnector):
         self.last_error: str = ""
         self.account_id: Optional[str] = None
         self.currency: str = "USD"
+        self._multiplier_cache: dict[str, float] = {}  # symbol -> max valid multiplier, memoized per connection
 
     async def connect(self) -> bool:
         headers = {"Deriv-App-ID": self.app_id, "Authorization": f"Bearer {self.api_token}"}
@@ -149,9 +150,14 @@ class DerivConnector(BrokerConnector):
 
     async def get_symbol_info(self, symbol: str) -> SymbolInfo:
         resp = await self._call({"ticks": symbol})
-        tick = resp.get("tick", {})
+        tick = resp.get("tick")
+        if not tick or "error" in resp:
+            err = resp.get("error", {}).get("message", "no tick data returned")
+            raise RuntimeError(f"couldn't get a live quote for {symbol}: {err}")
         bid = float(tick.get("bid", tick.get("quote", 0)))
         ask = float(tick.get("ask", tick.get("quote", 0)))
+        if bid <= 0 or ask <= 0:
+            raise RuntimeError(f"{symbol} returned a non-positive quote (bid={bid}, ask={ask})")
         return SymbolInfo(
             symbol=symbol, bid=bid, ask=ask,
             point=0.00001, min_volume=1.0, volume_step=1.0, contract_size=1.0,
@@ -189,6 +195,41 @@ class DerivConnector(BrokerConnector):
             ))
         return result
 
+    async def get_max_valid_multiplier(self, symbol: str) -> float:
+        """Deriv's actual multiplier options are per-symbol and come as
+        a fixed list of exact valid values (not a min/max pair) — a
+        hardcoded default of 100 can simply not be one of the allowed
+        choices for a given pair (minor forex crosses in particular
+        often only allow much lower multipliers than majors do), and
+        no amount of stake backoff will ever fix a request rejected
+        because the multiplier itself isn't a valid option. Cached per
+        symbol since it doesn't change within a session."""
+        if symbol in self._multiplier_cache:
+            return self._multiplier_cache[symbol]
+        try:
+            resp = await self._call({"contracts_for": symbol, "currency": self.currency})
+            available = resp.get("contracts_for", {}).get("available", [])
+            multiplier_contract = next(
+                (c for c in available if c.get("contract_type") in ("MULTUP", "MULTDOWN")), None
+            )
+            valid_range = [float(m) for m in (multiplier_contract.get("multiplier_range", [])
+                                               if multiplier_contract else [])]
+            if not valid_range:
+                resolved = float(self.multiplier)
+            elif float(self.multiplier) in valid_range:
+                resolved = float(self.multiplier)
+            else:
+                # Prefer the largest valid value that doesn't exceed our
+                # configured preference; if our preference is below every
+                # valid option, take the smallest one rather than fail.
+                candidates = [m for m in valid_range if m <= self.multiplier]
+                resolved = max(candidates) if candidates else min(valid_range)
+        except Exception as e:
+            logger.warning(f"couldn't look up multiplier range for {symbol} ({e}) — using configured default")
+            resolved = float(self.multiplier)
+        self._multiplier_cache[symbol] = resolved
+        return resolved
+
     async def place_order(
         self, symbol: str, side: OrderSide, volume: float,
         order_type: OrderType = OrderType.MARKET, price: Optional[float] = None,
@@ -206,7 +247,8 @@ class DerivConnector(BrokerConnector):
         contract_type = "MULTUP" if side == OrderSide.BUY else "MULTDOWN"
         info = await self.get_symbol_info(symbol)
         entry_price = info.ask if side == OrderSide.BUY else info.bid
-        stake = round((volume * entry_price) / self.multiplier, 2) if entry_price else volume
+        multiplier = await self.get_max_valid_multiplier(symbol)
+        stake = round((volume * entry_price) / multiplier, 2) if entry_price else volume
         stake = max(stake, 1.0)  # Deriv's practical floor for a Multiplier stake
 
         # Sanity cap: a trade properly sized to risk ~1% of equity
@@ -242,7 +284,7 @@ class DerivConnector(BrokerConnector):
         for attempt in range(5):
             parameters = {
                 "amount": stake, "basis": "stake", "contract_type": contract_type,
-                "currency": self.currency, "underlying_symbol": symbol, "multiplier": self.multiplier,
+                "currency": self.currency, "underlying_symbol": symbol, "multiplier": multiplier,
             }
             if limit_order:
                 parameters["limit_order"] = limit_order

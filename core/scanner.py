@@ -142,7 +142,15 @@ class Scanner:
                 )
                 return None
 
-        symbol_info = await self.broker.get_symbol_info(reading.symbol)
+        try:
+            symbol_info = await self.broker.get_symbol_info(reading.symbol)
+        except Exception as e:
+            logger.warning(f"skip {reading.symbol}: couldn't get a valid quote ({e})")
+            await self._log_trade(
+                reading.symbol, reading.signal.value, 0, 0, 0, reading.strength, triggered_by,
+                success=False, message=f"skipped — no valid quote available: {e}",
+            )
+            return None
         side = OrderSide.BUY if reading.signal == Signal.BUY else OrderSide.SELL
         entry = symbol_info.ask if side == OrderSide.BUY else symbol_info.bid
 
