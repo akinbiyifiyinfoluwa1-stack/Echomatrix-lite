@@ -27,6 +27,7 @@ Docs: https://developers.deriv.com/docs/intro/api-overview/
 import asyncio
 import itertools
 import json
+import logging
 from typing import Optional
 import httpx
 import websockets
@@ -44,6 +45,8 @@ GRANULARITY_MAP = {
 }
 
 DEFAULT_MULTIPLIER = 100
+
+logger = logging.getLogger("echomatrix.deriv")
 
 
 class DerivConnector(BrokerConnector):
@@ -205,6 +208,27 @@ class DerivConnector(BrokerConnector):
         entry_price = info.ask if side == OrderSide.BUY else info.bid
         stake = round((volume * entry_price) / self.multiplier, 2) if entry_price else volume
         stake = max(stake, 1.0)  # Deriv's practical floor for a Multiplier stake
+
+        # Sanity cap: a trade properly sized to risk ~1% of equity
+        # should never need anywhere close to a large fraction of
+        # equity as the actual stake. If it does, something upstream
+        # in the units->stake conversion produced a bad number — most
+        # likely an unusually tight ATR-based stop for this symbol
+        # blew up the position size before it ever got here. Capping
+        # defensively also means the backoff loop below can actually
+        # converge in a bounded number of attempts instead of starting
+        # from something absurd and still being oversized 5 halvings later.
+        try:
+            account = await self.get_account_info()
+            max_sane_stake = max(account.equity * 0.05, 1.0)
+            if stake > max_sane_stake:
+                logger.warning(
+                    f"{symbol}: computed stake {stake} is implausibly large relative to "
+                    f"equity {account.equity} — capping to {max_sane_stake} rather than trusting it"
+                )
+                stake = round(max_sane_stake, 2)
+        except Exception as e:
+            logger.warning(f"{symbol}: couldn't sanity-check stake against equity ({e}) — proceeding uncapped")
 
         limit_order = {}
         if sl:

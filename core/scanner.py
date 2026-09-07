@@ -148,7 +148,13 @@ class Scanner:
 
         # ATR-based stop, with a take-profit sized off the same distance
         # by a fixed reward:risk ratio — both automatic, no manual input.
-        stop_distance = reading.atr * self.config.stop_atr_multiplier or entry * 0.01
+        # A floor at 0.1% of entry price, not just a fallback for ATR
+        # being exactly zero — a very small but nonzero ATR reading
+        # (a genuinely low-volatility pair, or a data quirk) can still
+        # produce a stop distance tiny enough to blow up position
+        # sizing into an absurd volume, since sizing divides risk
+        # amount by this distance.
+        stop_distance = max(reading.atr * self.config.stop_atr_multiplier, entry * 0.001)
         tp_distance = stop_distance * self.config.reward_risk_ratio
         if side == OrderSide.BUY:
             stop = entry - stop_distance
