@@ -172,7 +172,7 @@ function renderCard(broker, status) {
   const removeBtn = div.querySelector(".btn-remove");
   if (removeBtn) removeBtn.addEventListener("click", () => removeCredentials(broker, div));
 
-  if (st.connected) loadMarketsSummary(broker.id, div);
+  if (st.connected && broker.endpointBase === "/api/credentials") loadMarketsSummary(broker.id, div);
 
   return div;
 }

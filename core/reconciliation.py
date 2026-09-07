@@ -69,3 +69,24 @@ async def reconcile_broker(broker) -> dict:
     if resolved:
         logger.info(f"reconciliation ({broker.name}): {resolved}/{checked} trades resolved")
     return {"checked": checked, "resolved": resolved}
+
+
+async def get_today_realized_pnl(broker_name: str) -> float:
+    """Sum of P&L from every trade that's actually closed today (UTC).
+    Used by the daily loss circuit breaker — a fresh count each
+    calendar day, distinct from the all-time peak-equity drawdown
+    check the risk manager already does."""
+    if not SessionLocal:
+        return 0.0
+    from sqlalchemy import func
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(func.sum(TradeExecution.pnl)).where(
+                TradeExecution.broker == broker_name,
+                TradeExecution.closed == True,  # noqa: E712
+                TradeExecution.closed_at >= today_start,
+            )
+        )
+        total = result.scalar()
+    return total or 0.0

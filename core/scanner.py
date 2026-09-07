@@ -38,6 +38,8 @@ class ScannerConfig:
     learning_gate_enabled: bool = True  # let backtest track record veto auto-trades on a symbol
     min_backtest_trades: int = 10       # need at least this many backtested trades before trusting the win rate
     min_backtest_win_rate: float = 40.0 # below this, auto-trading skips the symbol regardless of live signal
+    daily_loss_gate_enabled: bool = True  # stop new auto-trades once today's realized losses cross the limit
+    max_daily_loss_pct: float = 5.0     # % of equity — resets every calendar day (UTC)
 
 
 class Scanner:
@@ -123,6 +125,25 @@ class Scanner:
         auto-trade loop and a manual 'trade this' tap use the exact same
         path — no separate/looser logic for manual trades. Every attempt,
         successful or not, is written to the trade journal."""
+        if triggered_by == "auto" and self.config.daily_loss_gate_enabled:
+            from core.reconciliation import get_today_realized_pnl
+            account = await self.broker.get_account_info()
+            today_pnl = await get_today_realized_pnl(self.broker.name)
+            loss_limit = -abs(account.equity * self.config.max_daily_loss_pct / 100)
+            if today_pnl <= loss_limit:
+                reason = (f"today's realized P&L ({today_pnl:+.2f}) has already crossed the daily "
+                          f"loss limit ({self.config.max_daily_loss_pct}% of equity = {loss_limit:.2f}) "
+                          f"— auto-trading paused until tomorrow (UTC)")
+                logger.info(f"skip {reading.symbol}: {reason}")
+                await self._log_lesson(
+                    situation=f"{reading.symbol} signaled {reading.signal.value} for auto-trading",
+                    decision="declined — daily loss circuit breaker",
+                    outcome=f"today_pnl={today_pnl:.2f}, limit={loss_limit:.2f}",
+                    lesson=reason,
+                )
+                self.last_decline_reason = reason
+                return None
+
         if triggered_by == "auto" and self.config.learning_gate_enabled:
             from core.backtest import get_symbol_reliability
             reliability = await get_symbol_reliability(
