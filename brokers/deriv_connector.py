@@ -149,17 +149,30 @@ class DerivConnector(BrokerConnector):
                 "sample": {k: v[:5] for k, v in by_market.items()}}
 
     async def get_symbol_info(self, symbol: str) -> SymbolInfo:
-        resp = await self._call({"ticks": symbol})
-        tick = resp.get("tick")
-        if not tick or "error" in resp:
+        """Deliberately uses ticks_history (style=ticks, count=1) rather
+        than the plain `ticks` request — `ticks` implicitly creates a
+        live subscription on this connection, and calling it again for
+        a symbol already subscribed fails with 'You are already
+        subscribed', which is exactly the bug that silently produced
+        bad $0.0 quotes before this was caught. ticks_history is the
+        same on-demand, non-subscribing pattern already used reliably
+        elsewhere for candles. It returns one price (not separate
+        bid/ask — that's only in the streaming tick message), which is
+        fine here since we never submit a specific execution price to
+        Deriv anyway (orders go through at prevailing market price) —
+        this value is only used for our own local risk math."""
+        resp = await self._call({
+            "ticks_history": symbol, "count": 1, "end": "latest", "style": "ticks",
+        })
+        prices = resp.get("history", {}).get("prices", [])
+        if not prices or "error" in resp:
             err = resp.get("error", {}).get("message", "no tick data returned")
             raise RuntimeError(f"couldn't get a live quote for {symbol}: {err}")
-        bid = float(tick.get("bid", tick.get("quote", 0)))
-        ask = float(tick.get("ask", tick.get("quote", 0)))
-        if bid <= 0 or ask <= 0:
-            raise RuntimeError(f"{symbol} returned a non-positive quote (bid={bid}, ask={ask})")
+        price = float(prices[-1])
+        if price <= 0:
+            raise RuntimeError(f"{symbol} returned a non-positive quote ({price})")
         return SymbolInfo(
-            symbol=symbol, bid=bid, ask=ask,
+            symbol=symbol, bid=price, ask=price,
             point=0.00001, min_volume=1.0, volume_step=1.0, contract_size=1.0,
         )
 

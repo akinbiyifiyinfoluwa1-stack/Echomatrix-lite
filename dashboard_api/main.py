@@ -556,7 +556,7 @@ async def execute_scanned_signal(broker_name: str, symbol: str):
         raise HTTPException(404, f"no recent scan reading for {symbol} — run a scan first")
     result = await scanner.execute_signal(reading, triggered_by="manual")
     if result is None:
-        raise HTTPException(400, "risk check declined this trade (see server logs for reason)")
+        raise HTTPException(400, scanner.last_decline_reason or "trade was declined for an unknown reason")
     if not result.success:
         raise HTTPException(400, result.message)
     return result

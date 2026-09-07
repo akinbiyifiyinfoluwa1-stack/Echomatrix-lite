@@ -49,6 +49,7 @@ class Scanner:
         self.config = config
         self.last_readings: list[TrendReading] = []
         self.last_breadth: MarketBreadth = MarketBreadth(0, 0, 0, 0, 0.0)
+        self.last_decline_reason: str = ""
         self._running = False
 
     async def scan_once(self) -> list[TrendReading]:
@@ -140,6 +141,7 @@ class Scanner:
                     outcome=str(reliability),
                     lesson=reason,
                 )
+                self.last_decline_reason = reason
                 return None
 
         try:
@@ -150,6 +152,7 @@ class Scanner:
                 reading.symbol, reading.signal.value, 0, 0, 0, reading.strength, triggered_by,
                 success=False, message=f"skipped — no valid quote available: {e}",
             )
+            self.last_decline_reason = f"no valid quote available: {e}"
             return None
         side = OrderSide.BUY if reading.signal == Signal.BUY else OrderSide.SELL
         entry = symbol_info.ask if side == OrderSide.BUY else symbol_info.bid
@@ -184,6 +187,7 @@ class Scanner:
                 reading.strength, triggered_by, success=False,
                 message=f"risk check declined: {decision.reason}", tp=take_profit,
             )
+            self.last_decline_reason = decision.reason
             return None
 
         review_note = ""
@@ -205,6 +209,7 @@ class Scanner:
                     reading.strength, triggered_by, success=False,
                     message=f"AI review declined: {review['note']}", tp=take_profit,
                 )
+                self.last_decline_reason = f"AI review declined: {review['note']}"
                 return None
 
         result = await self.broker.place_order(
