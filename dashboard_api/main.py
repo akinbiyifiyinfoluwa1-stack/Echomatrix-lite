@@ -53,28 +53,88 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 # Registered brokers, keyed by name. Populated on startup from env vars
 # and/or the dashboard's saved credentials (env vars take priority).
 brokers: dict[str, BrokerConnector] = {}
-risk_manager = RiskManager(RiskConfig())
 brain = QuickBrain()
 scanners: dict[str, Scanner] = {}
 _scan_tasks: dict[str, asyncio.Task] = {}
 
 
-def _register_broker(name: str, connector: BrokerConnector) -> None:
-    """Wire a freshly-connected broker into the live scanner set."""
+def _register_broker(name: str, connector: BrokerConnector, config: Optional[ScannerConfig] = None,
+                      risk_config: Optional[RiskConfig] = None) -> None:
+    """Wire a freshly-connected broker into the live scanner set. 'name'
+    is the account's own label, not necessarily the broker type — this
+    is what makes multiple accounts on the same broker type possible:
+    each gets its own label, its own connector, its own scanner, and
+    every existing /{label}/... route (scan, positions, account, etc.)
+    already works unchanged since they were never hardcoded to assume
+    exactly one account per broker type.
+
+    Each account also gets its OWN RiskManager instance — sharing one
+    global instance across accounts with different balances would
+    corrupt peak-equity drawdown tracking (a $10 account's balance
+    swings would pollute a $10,000 account's drawdown baseline, and
+    vice versa)."""
     brokers[name] = connector
-    scanners[name] = Scanner(connector, brain, risk_manager, ScannerConfig())
+    scanners[name] = Scanner(connector, brain, RiskManager(risk_config or RiskConfig()), config or ScannerConfig())
 
 
-async def _connect_binance(api_key: str, api_secret: str, testnet: bool) -> tuple[Optional[BinanceConnector], str]:
-    connector = BinanceConnector(api_key, api_secret, testnet=testnet)
+async def _connect_account(broker_type: str, label: str, creds: dict) -> tuple[Optional[BrokerConnector], str]:
+    """Single dispatcher for connecting any account, regardless of
+    broker type or how many other accounts of that type already exist."""
+    if broker_type == "binance":
+        connector = BinanceConnector(
+            creds.get("api_key", ""), creds.get("api_secret", ""),
+            testnet=creds.get("testnet", True),
+        )
+    elif broker_type == "deriv":
+        connector = DerivConnector(
+            creds.get("api_token", ""), app_id=creds.get("app_id") or "1089",
+            use_demo=creds.get("use_demo", True),
+        )
+    else:
+        return None, f"unknown broker type '{broker_type}'"
     ok = await connector.connect()
     return (connector, "") if ok else (None, connector.last_error)
+
+
+def _flip_mode_configs(flip_mode: bool) -> tuple[Optional[ScannerConfig], Optional[RiskConfig]]:
+    """Tiny accounts (a $5-10 'flip' account) can't actually run normal
+    1%-risk sizing — it floors to the broker's practical minimum stake
+    regardless, which on a tiny balance is really 10-20%+ risk per
+    trade whether the math says 1% or not. Flip mode is an honest,
+    deliberately different regime for that reality: one position at a
+    time, a higher bar on the AI's own confidence (not just approve/
+    reject), and a daily loss limit wide enough to survive a couple of
+    those larger-than-intended losses before pausing rather than
+    halting on the very first one."""
+    if not flip_mode:
+        return None, None
+    scanner_config = ScannerConfig(
+        ai_review_enabled=True, min_ai_confidence=70.0,
+        daily_loss_gate_enabled=True, max_daily_loss_pct=25.0,
+        flip_mode=True,
+    )
+    risk_config = RiskConfig(max_open_positions=1)
+    return scanner_config, risk_config
+
+
+def _resolve_broker_type(label: str, saved: dict) -> Optional[str]:
+    """Every account saved through the new multi-account endpoint
+    stores its own broker_type explicitly. Accounts saved before this
+    existed (the original single binance/deriv cards) never wrote that
+    field — for those, the label itself was always exactly the broker
+    type, so that's the safe fallback rather than treating them as
+    unrecognized and silently dropping already-working credentials."""
+    return saved.get("broker_type") or (label if label in ("binance", "deriv") else None)
+
+
+# Kept for the original single-account Settings cards — thin wrappers
+# around the shared dispatcher above so both paths behave identically.
+async def _connect_binance(api_key: str, api_secret: str, testnet: bool) -> tuple[Optional[BinanceConnector], str]:
+    return await _connect_account("binance", "binance", {"api_key": api_key, "api_secret": api_secret, "testnet": testnet})
 
 
 async def _connect_deriv(api_token: str, app_id: str, use_demo: bool = True) -> tuple[Optional[DerivConnector], str]:
-    connector = DerivConnector(api_token, app_id=app_id or "1089", use_demo=use_demo)
-    ok = await connector.connect()
-    return (connector, "") if ok else (None, connector.last_error)
+    return await _connect_account("deriv", "deriv", {"api_token": api_token, "app_id": app_id, "use_demo": use_demo})
 
 
 @app.on_event("startup")
@@ -83,8 +143,9 @@ async def startup():
     logging.info("database %s", "connected and tables ready" if db_ready else "not configured — DATABASE_URL missing")
 
     stored = creds_store.get_all()
+    connected_labels: set[str] = set()
 
-    # Binance — env vars first, then dashboard-saved credentials
+    # Binance — env vars first (always label "binance"), then dashboard-saved
     b_key = os.getenv("BINANCE_API_KEY") or (stored.get("binance") or {}).get("api_key")
     b_secret = os.getenv("BINANCE_API_SECRET") or (stored.get("binance") or {}).get("api_secret")
     b_testnet_raw = os.getenv("BINANCE_TESTNET")
@@ -93,8 +154,9 @@ async def startup():
         binance, _ = await _connect_binance(b_key, b_secret, b_testnet)
         if binance:
             _register_broker("binance", binance)
+            connected_labels.add("binance")
 
-    # Deriv — env vars first, then dashboard-saved credentials
+    # Deriv — env vars first (always label "deriv"), then dashboard-saved
     d_token = os.getenv("DERIV_API_TOKEN") or (stored.get("deriv") or {}).get("api_token")
     d_app_id = os.getenv("DERIV_APP_ID") or (stored.get("deriv") or {}).get("app_id") or "1089"
     d_use_demo = (stored.get("deriv") or {}).get("use_demo", True)
@@ -102,6 +164,22 @@ async def startup():
         deriv, _ = await _connect_deriv(d_token, d_app_id, d_use_demo)
         if deriv:
             _register_broker("deriv", deriv)
+            connected_labels.add("deriv")
+
+    # Any additional saved accounts beyond the original single binance/deriv
+    # slots — this is what makes multiple accounts persist across restarts.
+    for label, creds in stored.items():
+        if label in connected_labels:
+            continue
+        broker_type = _resolve_broker_type(label, creds)
+        if not broker_type:
+            continue
+        connector, err = await _connect_account(broker_type, label, creds)
+        if connector:
+            scanner_config, risk_config = _flip_mode_configs(creds.get("flip_mode", False))
+            _register_broker(label, connector, scanner_config, risk_config)
+        else:
+            logging.warning(f"couldn't reconnect saved account '{label}' ({broker_type}) on startup: {err}")
 
 
 @app.on_event("shutdown")
@@ -116,6 +194,85 @@ def get_broker(name: str) -> BrokerConnector:
     if name not in brokers:
         raise HTTPException(404, f"broker '{name}' not connected — check its API credentials")
     return brokers[name]
+
+
+class AccountCredentials(BaseModel):
+    """Generic multi-account save — 'label' is whatever the user wants
+    to call this account (e.g. 'deriv-flip1'), independent of how many
+    other accounts of the same broker_type already exist."""
+    label: str
+    broker_type: str  # "binance" | "deriv"
+    api_key: Optional[str] = None
+    api_secret: Optional[str] = None
+    api_token: Optional[str] = None
+    app_id: Optional[str] = None
+    testnet: bool = True
+    use_demo: bool = True
+    flip_mode: bool = False
+
+
+@app.get("/api/accounts")
+async def list_accounts():
+    """Every saved account across every broker type, with live
+    connection status — the multi-account view Settings needs beyond
+    the original single binance/deriv cards."""
+    stored = creds_store.get_all()
+    result = []
+    for label, creds in stored.items():
+        broker_type = _resolve_broker_type(label, creds)
+        result.append({
+            "label": label, "broker_type": broker_type,
+            "connected": label in brokers,
+            "configured": True,
+            "flip_mode": creds.get("flip_mode", False),
+        })
+    return result
+
+
+@app.post("/api/accounts")
+async def save_account(req: AccountCredentials):
+    creds = req.model_dump(exclude={"label"})
+    connector, reason = await _connect_account(req.broker_type, req.label, creds)
+    creds_store.save(req.label, creds)
+    if not connector:
+        return {"connected": False, "label": req.label, "message": f"saved, but couldn't connect — {reason}"}
+    if req.label in brokers:
+        await brokers[req.label].disconnect()
+
+    if req.flip_mode:
+        # Tiny accounts (a $5-10 "flip" account) can't actually run
+        # normal 1%-risk sizing — it floors to the broker's practical
+        # minimum stake regardless, which on a tiny balance is really
+        # 10-20%+ risk per trade whether the math says 1% or not. Flip
+        # mode is an honest, deliberately different regime for that
+        # reality: one position at a time, a higher bar on the AI's
+        # own confidence (not just approve/reject), and a daily loss
+        # limit wide enough to survive a couple of those larger-than-
+        # intended losses before pausing rather than halting on the
+        # very first one.
+        scanner_config = ScannerConfig(
+            ai_review_enabled=True, min_ai_confidence=70.0,
+            daily_loss_gate_enabled=True, max_daily_loss_pct=25.0,
+            flip_mode=True,
+        )
+        risk_config = RiskConfig(max_open_positions=1)
+        _register_broker(req.label, connector, scanner_config, risk_config)
+    else:
+        _register_broker(req.label, connector)
+    return {"connected": True, "label": req.label, "flip_mode": req.flip_mode}
+
+
+@app.delete("/api/accounts/{label}")
+async def remove_account(label: str):
+    if label in brokers:
+        task = _scan_tasks.pop(label, None)
+        if task:
+            task.cancel()
+        await brokers[label].disconnect()
+        del brokers[label]
+        scanners.pop(label, None)
+    creds_store.delete(label)
+    return {"removed": label}
 
 
 class OrderRequest(BaseModel):
@@ -501,11 +658,18 @@ async def place_order(broker_name: str, req: OrderRequest):
     side = OrderSide.BUY if req.side.lower() == "buy" else OrderSide.SELL
     order_type = OrderType.MARKET if req.order_type.lower() == "market" else OrderType.LIMIT
 
-    # Risk check before sending — uses SL if given, else a flat 1% notional guard
-    entry_ref = req.price or (await broker.get_symbol_info(req.symbol)).ask
+    # Use this account's own risk manager (own peak-equity tracking,
+    # own limits) — falls back to a fresh default only if this broker
+    # somehow has no scanner registered, which shouldn't normally happen.
+    account_risk = scanners[broker_name].risk if broker_name in scanners else RiskManager(RiskConfig())
+
+    symbol_info = await broker.get_symbol_info(req.symbol)
+    entry_ref = req.price or symbol_info.ask
     stop_ref = req.sl or (entry_ref * 0.99 if side == OrderSide.BUY else entry_ref * 1.01)
-    decision = await risk_manager.check_trade(
-        broker, req.symbol, side, req.volume, entry_ref, stop_ref
+    decision = await account_risk.check_trade(
+        broker, req.symbol, side, entry_price=entry_ref, stop_loss_price=stop_ref,
+        min_volume=symbol_info.min_volume, volume_step=symbol_info.volume_step,
+        contract_size=symbol_info.contract_size,
     )
     if not decision.allowed:
         raise HTTPException(400, f"risk check failed: {decision.reason}")

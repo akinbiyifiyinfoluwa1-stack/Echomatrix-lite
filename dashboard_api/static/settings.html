@@ -20,6 +20,69 @@
 <div class="section-title">Brokers</div>
 <div id="broker-cards"></div>
 
+<div class="section-title">Additional Accounts</div>
+<div class="card">
+  <div class="hint" style="padding-top:0;">
+    Add another account on either broker — useful for running a small
+    "flip" account separately from your main one, each with its own
+    independent trading loop, risk settings, and history.
+  </div>
+  <label for="acct-broker-type">Broker</label>
+  <select id="acct-broker-type">
+    <option value="deriv">Deriv</option>
+    <option value="binance">Binance</option>
+  </select>
+  <label for="acct-label">Account label (your own name for it)</label>
+  <input type="text" id="acct-label" placeholder="e.g. deriv-flip1" />
+  <div class="toggle-row">
+    <input type="checkbox" id="acct-flip-mode" />
+    <label for="acct-flip-mode" style="margin:0;">Flip Mode — for a small account (~$5-10)</label>
+  </div>
+  <div class="hint" style="padding-top:6px;font-size:12px;">
+    Normal 1%-risk sizing can't actually work on a tiny balance — it
+    floors to the broker's minimum stake regardless, which is really
+    10-20%+ per trade no matter what the math says. Flip Mode is an
+    honest, different regime for that: one trade at a time, a higher
+    bar on the AI's own confidence before it'll proceed, and a daily
+    loss limit wide enough to survive a couple of those larger losses
+    before pausing.
+  </div>
+  <div id="acct-fields-deriv">
+    <label for="acct-deriv-token">API Token</label>
+    <input type="password" id="acct-deriv-token" />
+    <label for="acct-deriv-appid">App ID</label>
+    <input type="text" id="acct-deriv-appid" placeholder="1089" />
+    <div class="toggle-row">
+      <input type="checkbox" id="acct-deriv-demo" checked />
+      <label for="acct-deriv-demo" style="margin:0;">Use Demo account</label>
+    </div>
+  </div>
+  <div id="acct-fields-binance" style="display:none;">
+    <label for="acct-binance-key">API Key</label>
+    <input type="text" id="acct-binance-key" />
+    <label for="acct-binance-secret">API Secret</label>
+    <input type="password" id="acct-binance-secret" />
+    <div class="toggle-row">
+      <input type="checkbox" id="acct-binance-testnet" checked />
+      <label for="acct-binance-testnet" style="margin:0;">Use Testnet</label>
+    </div>
+  </div>
+  <div class="btn-row">
+    <button class="btn-save" id="acct-save-btn">Add Account</button>
+  </div>
+  <div class="msg" id="acct-msg"></div>
+</div>
+<div class="card">
+  <div class="card-header">
+    <div class="card-title">All Accounts</div>
+    <button class="close-btn" id="acct-refresh-btn" style="color:var(--muted);border-color:var(--border);">Refresh</button>
+  </div>
+  <table id="acct-table">
+    <thead><tr><th>Label</th><th>Broker</th><th>Status</th><th></th></tr></thead>
+    <tbody><tr><td colspan="4" class="empty-row">No accounts yet</td></tr></tbody>
+  </table>
+</div>
+
 <div class="section-title">AI Providers</div>
 <div id="ai-cards"></div>
 
@@ -280,7 +343,89 @@ document.getElementById("research-btn").addEventListener("click", async () => {
   }
 });
 
+document.getElementById("acct-broker-type").addEventListener("change", (e) => {
+  const isDeriv = e.target.value === "deriv";
+  document.getElementById("acct-fields-deriv").style.display = isDeriv ? "block" : "none";
+  document.getElementById("acct-fields-binance").style.display = isDeriv ? "none" : "block";
+});
+
+document.getElementById("acct-save-btn").addEventListener("click", async () => {
+  const brokerType = document.getElementById("acct-broker-type").value;
+  const label = document.getElementById("acct-label").value.trim();
+  const msg = document.getElementById("acct-msg");
+  if (!label) {
+    msg.textContent = "Give this account a label first.";
+    msg.className = "msg err";
+    return;
+  }
+  const body = { label, broker_type: brokerType, flip_mode: document.getElementById("acct-flip-mode").checked };
+  if (brokerType === "deriv") {
+    body.api_token = document.getElementById("acct-deriv-token").value.trim();
+    body.app_id = document.getElementById("acct-deriv-appid").value.trim() || "1089";
+    body.use_demo = document.getElementById("acct-deriv-demo").checked;
+  } else {
+    body.api_key = document.getElementById("acct-binance-key").value.trim();
+    body.api_secret = document.getElementById("acct-binance-secret").value.trim();
+    body.testnet = document.getElementById("acct-binance-testnet").checked;
+  }
+  msg.textContent = "Connecting...";
+  msg.className = "msg";
+  try {
+    const resp = await fetch("/api/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (resp.ok && data.connected) {
+      msg.textContent = `"${label}" connected successfully.`;
+      msg.className = "msg ok";
+      document.getElementById("acct-label").value = "";
+    } else {
+      msg.textContent = data.message || data.detail || "Saved, but couldn't connect — check the credentials.";
+      msg.className = "msg err";
+    }
+  } catch (e) {
+    msg.textContent = "Network error — try again.";
+    msg.className = "msg err";
+  }
+  loadAccounts();
+});
+
+async function loadAccounts() {
+  const tbody = document.querySelector("#acct-table tbody");
+  try {
+    const resp = await fetch("/api/accounts");
+    const accounts = await resp.json();
+    if (!accounts.length) {
+      tbody.innerHTML = `<tr><td colspan="4" class="empty-row">No accounts yet</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = accounts.map(a => `
+      <tr>
+        <td>${a.label}${a.flip_mode ? '<br><span style="font-size:11px;color:var(--accent);">Flip Mode</span>' : ''}</td>
+        <td>${a.broker_type}</td>
+        <td style="color:${a.connected ? 'var(--ok)' : 'var(--danger)'}">${a.connected ? "Connected" : "Not connected"}</td>
+        <td><button class="close-btn remove-acct-btn" data-label="${a.label}">Remove</button></td>
+      </tr>
+    `).join("");
+    tbody.querySelectorAll(".remove-acct-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if (!confirm(`Remove account "${btn.dataset.label}"? This stops its trading loop and deletes its saved credentials.`)) return;
+        btn.disabled = true;
+        await fetch(`/api/accounts/${encodeURIComponent(btn.dataset.label)}`, { method: "DELETE" });
+        loadAccounts();
+      });
+    });
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="empty-row">Couldn't load accounts</td></tr>`;
+  }
+}
+
+document.getElementById("acct-refresh-btn").addEventListener("click", loadAccounts);
+
 loadStatus();
+loadAccounts();
 
 // ---------- Historical Data & Backtesting ----------
 

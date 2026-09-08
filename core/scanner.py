@@ -40,6 +40,9 @@ class ScannerConfig:
     min_backtest_win_rate: float = 40.0 # below this, auto-trading skips the symbol regardless of live signal
     daily_loss_gate_enabled: bool = True  # stop new auto-trades once today's realized losses cross the limit
     max_daily_loss_pct: float = 5.0     # % of equity — resets every calendar day (UTC)
+    min_ai_confidence: float = 0.0      # require the AI review to clear this confidence bar, not just approve=true
+    flip_mode: bool = False             # tiny accounts where 1%-risk sizing can't work (floored to the broker minimum) —
+                                         # tracked mainly so it shows up in status/UI, not used for gating logic directly
 
 
 class Scanner:
@@ -223,14 +226,17 @@ class Scanner:
                 "breadth_agrees": self.last_breadth.agrees_with(reading.signal),
             })
             review_note = f" | AI ({review['provider']}, {review['confidence']:.0f}% confidence): {review['note']}"
-            if not review["approve"]:
-                logger.info(f"skip {reading.symbol}: AI review declined — {review['note']}")
+            if not review["approve"] or review["confidence"] < self.config.min_ai_confidence:
+                reason = (review["note"] if not review["approve"]
+                          else f"AI confidence {review['confidence']:.0f}% is below the "
+                               f"{self.config.min_ai_confidence:.0f}% bar required for this account")
+                logger.info(f"skip {reading.symbol}: AI review declined — {reason}")
                 await self._log_trade(
                     reading.symbol, side.value, decision.suggested_volume, entry, stop,
                     reading.strength, triggered_by, success=False,
-                    message=f"AI review declined: {review['note']}", tp=take_profit,
+                    message=f"AI review declined: {reason}", tp=take_profit,
                 )
-                self.last_decline_reason = f"AI review declined: {review['note']}"
+                self.last_decline_reason = f"AI review declined: {reason}"
                 return None
 
         result = await self.broker.place_order(
