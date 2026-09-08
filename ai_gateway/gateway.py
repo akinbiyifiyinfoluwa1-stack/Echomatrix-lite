@@ -14,6 +14,7 @@ Install: pip install google-genai groq
 """
 
 import os
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
@@ -49,26 +50,43 @@ class AIGateway:
         }
 
     async def generate(self, prompt: str, task_type: str = "research") -> AIResponse:
+        """Try the preferred provider for this task type; if it's
+        configured but actually fails (quota exhausted, transient
+        error, etc.) — not just 'not configured' — fall through to
+        the other provider before giving up. The old version only
+        fell back when the preferred provider had no key at all,
+        so a configured-but-rate-limited Gemini meant no AI opinion
+        for the rest of the day even with a perfectly good Groq key
+        sitting right there."""
         gemini_key, groq_key = self._load_keys()
         prefer_groq = task_type in ("fast", "quick")
+        providers = (
+            [("groq", groq_key), ("gemini", gemini_key)] if prefer_groq
+            else [("gemini", gemini_key), ("groq", groq_key)]
+        )
 
-        if not prefer_groq and gemini_key:
-            client = genai.Client(api_key=gemini_key)
-            resp = await client.aio.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-            return AIResponse(text=resp.text, provider="gemini", model=GEMINI_MODEL)
+        last_error: Optional[Exception] = None
+        for name, key in providers:
+            if not key:
+                continue
+            try:
+                if name == "gemini":
+                    client = genai.Client(api_key=key)
+                    resp = await client.aio.models.generate_content(model=GEMINI_MODEL, contents=prompt)
+                    return AIResponse(text=resp.text, provider="gemini", model=GEMINI_MODEL)
+                else:
+                    client = Groq(api_key=key)
+                    resp = client.chat.completions.create(
+                        model=GROQ_MODEL, messages=[{"role": "user", "content": prompt}],
+                    )
+                    return AIResponse(text=resp.choices[0].message.content, provider="groq", model=GROQ_MODEL)
+            except Exception as e:
+                logging.getLogger("echomatrix.ai_gateway").warning(f"{name} failed, trying next provider if any: {e}")
+                last_error = e
+                continue
 
-        if groq_key:
-            client = Groq(api_key=groq_key)
-            resp = client.chat.completions.create(
-                model=GROQ_MODEL, messages=[{"role": "user", "content": prompt}],
-            )
-            return AIResponse(text=resp.choices[0].message.content, provider="groq", model=GROQ_MODEL)
-
-        if gemini_key:  # groq was preferred but not configured — fall back
-            client = genai.Client(api_key=gemini_key)
-            resp = await client.aio.models.generate_content(model=GEMINI_MODEL, contents=prompt)
-            return AIResponse(text=resp.text, provider="gemini", model=GEMINI_MODEL)
-
+        if last_error:
+            raise last_error
         raise RuntimeError("No AI provider configured — add a Gemini or Groq key in the dashboard")
 
     async def test_key(self, provider: str, api_key: str) -> tuple[bool, str]:

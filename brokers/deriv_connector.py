@@ -63,7 +63,7 @@ class DerivConnector(BrokerConnector):
         self.last_error: str = ""
         self.account_id: Optional[str] = None
         self.currency: str = "USD"
-        self._multiplier_cache: dict[str, float] = {}  # symbol -> max valid multiplier, memoized per connection
+        self._multiplier_cache: dict[str, dict] = {}  # symbol -> {multiplier, max_stake}, memoized per connection
 
     async def connect(self) -> bool:
         headers = {"Deriv-App-ID": self.app_id, "Authorization": f"Bearer {self.api_token}"}
@@ -208,15 +208,21 @@ class DerivConnector(BrokerConnector):
             ))
         return result
 
-    async def get_max_valid_multiplier(self, symbol: str) -> float:
+    async def get_contract_limits(self, symbol: str) -> dict:
         """Deriv's actual multiplier options are per-symbol and come as
         a fixed list of exact valid values (not a min/max pair) — a
         hardcoded default of 100 can simply not be one of the allowed
         choices for a given pair (minor forex crosses in particular
         often only allow much lower multipliers than majors do), and
-        no amount of stake backoff will ever fix a request rejected
-        because the multiplier itself isn't a valid option. Cached per
-        symbol since it doesn't change within a session."""
+        no amount of stake backoff alone will ever fix a request
+        rejected because the multiplier itself isn't a valid option.
+
+        Also pulls payout_limit — for a Multiplier contract this caps
+        total exposure (roughly stake * multiplier), so a max sane
+        stake can be derived directly instead of discovering it purely
+        through trial and error against 'maximum purchase price'
+        rejections. Cached per symbol since neither changes within a
+        session."""
         if symbol in self._multiplier_cache:
             return self._multiplier_cache[symbol]
         try:
@@ -228,20 +234,24 @@ class DerivConnector(BrokerConnector):
             valid_range = [float(m) for m in (multiplier_contract.get("multiplier_range", [])
                                                if multiplier_contract else [])]
             if not valid_range:
-                resolved = float(self.multiplier)
+                multiplier = float(self.multiplier)
             elif float(self.multiplier) in valid_range:
-                resolved = float(self.multiplier)
+                multiplier = float(self.multiplier)
             else:
                 # Prefer the largest valid value that doesn't exceed our
                 # configured preference; if our preference is below every
                 # valid option, take the smallest one rather than fail.
                 candidates = [m for m in valid_range if m <= self.multiplier]
-                resolved = max(candidates) if candidates else min(valid_range)
+                multiplier = max(candidates) if candidates else min(valid_range)
+
+            payout_limit = float(multiplier_contract.get("payout_limit", 0)) if multiplier_contract else 0
+            max_stake_from_payout = (payout_limit / multiplier) if payout_limit and multiplier else float("inf")
+            result = {"multiplier": multiplier, "max_stake": max_stake_from_payout}
         except Exception as e:
-            logger.warning(f"couldn't look up multiplier range for {symbol} ({e}) — using configured default")
-            resolved = float(self.multiplier)
-        self._multiplier_cache[symbol] = resolved
-        return resolved
+            logger.warning(f"couldn't look up contract limits for {symbol} ({e}) — using configured default")
+            result = {"multiplier": float(self.multiplier), "max_stake": float("inf")}
+        self._multiplier_cache[symbol] = result
+        return result
 
     async def place_order(
         self, symbol: str, side: OrderSide, volume: float,
@@ -260,19 +270,26 @@ class DerivConnector(BrokerConnector):
         contract_type = "MULTUP" if side == OrderSide.BUY else "MULTDOWN"
         info = await self.get_symbol_info(symbol)
         entry_price = info.ask if side == OrderSide.BUY else info.bid
-        multiplier = await self.get_max_valid_multiplier(symbol)
+        limits = await self.get_contract_limits(symbol)
+        multiplier = limits["multiplier"]
         stake = round((volume * entry_price) / multiplier, 2) if entry_price else volume
         stake = max(stake, 1.0)  # Deriv's practical floor for a Multiplier stake
 
-        # Sanity cap: a trade properly sized to risk ~1% of equity
-        # should never need anywhere close to a large fraction of
-        # equity as the actual stake. If it does, something upstream
-        # in the units->stake conversion produced a bad number — most
-        # likely an unusually tight ATR-based stop for this symbol
-        # blew up the position size before it ever got here. Capping
-        # defensively also means the backoff loop below can actually
-        # converge in a bounded number of attempts instead of starting
-        # from something absurd and still being oversized 5 halvings later.
+        # Two independent upfront caps, both applied before ever
+        # submitting anything to Deriv:
+        # (1) payout_limit-derived — Deriv publishes a maximum payout
+        #     per symbol, which for a Multiplier roughly bounds total
+        #     exposure (stake * multiplier); dividing it out gives a
+        #     real, symbol-specific stake ceiling instead of guessing.
+        # (2) equity-derived — a trade properly sized to risk ~1% of
+        #     equity should never need anywhere close to a large
+        #     fraction of equity as the actual stake; if it does,
+        #     something upstream (e.g. an unusually tight ATR-based
+        #     stop) blew up the position size before it got here.
+        if stake > limits["max_stake"]:
+            logger.warning(f"{symbol}: stake {stake} exceeds this symbol's payout-derived "
+                            f"ceiling ({limits['max_stake']:.2f}) — capping")
+            stake = round(limits["max_stake"], 2)
         try:
             account = await self.get_account_info()
             max_sane_stake = max(account.equity * 0.05, 1.0)
@@ -291,10 +308,13 @@ class DerivConnector(BrokerConnector):
         if tp:
             limit_order["take_profit"] = tp
 
-        # Deriv's actual max-purchase-price ceiling isn't published per
-        # symbol/account, so back off by half on that specific error
-        # instead of guessing a hardcoded cap.
-        for attempt in range(5):
+        # Even with both upfront caps, Deriv's real per-account/per-symbol
+        # ceiling isn't fully published, so this reactive backoff is a
+        # safety net, not the primary mechanism anymore. Divides by 4
+        # (not 2) across more attempts — production evidence showed
+        # halving alone still landing on a rejected stake (e.g. $2.81,
+        # $15.62) after 5 tries, meaning it wasn't converging fast enough.
+        for attempt in range(8):
             parameters = {
                 "amount": stake, "basis": "stake", "contract_type": contract_type,
                 "currency": self.currency, "underlying_symbol": symbol, "multiplier": multiplier,
@@ -309,8 +329,8 @@ class DerivConnector(BrokerConnector):
                                     filled_price=float(b.get("buy_price", 0)), message="filled")
 
             err_msg = buy_resp["error"].get("message", "buy failed")
-            if "maximum purchase price" in err_msg.lower() and stake > 1.0:
-                stake = max(round(stake / 2, 2), 1.0)
+            if "maximum purchase price" in err_msg.lower() and stake > 0.5:
+                stake = max(round(stake / 4, 2), 0.5)
                 continue
             return OrderResult(success=False, order_id=None, filled_price=None, message=err_msg)
 
