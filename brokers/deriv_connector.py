@@ -322,7 +322,17 @@ class DerivConnector(BrokerConnector):
             if limit_order:
                 parameters["limit_order"] = limit_order
 
-            buy_resp = await self._call({"buy": "1", "price": 0, "parameters": parameters})
+            # `price` here isn't "market price" — Deriv's schema defines
+            # it as "Maximum price at which to purchase the contract."
+            # Submitting 0 meant "I refuse to pay more than $0", which
+            # rejects literally every contract regardless of size — this
+            # was the actual root cause of every single stake rejection
+            # seen in production, independent of anything sizing-related.
+            # For a Multiplier bought directly by stake, the real cost
+            # of the contract is the stake itself, so that's the correct
+            # ceiling to submit (not 0, and not an arbitrary large number
+            # that would defeat the point of having a ceiling at all).
+            buy_resp = await self._call({"buy": "1", "price": stake, "parameters": parameters})
             if "error" not in buy_resp:
                 b = buy_resp["buy"]
                 return OrderResult(success=True, order_id=str(b["contract_id"]),
