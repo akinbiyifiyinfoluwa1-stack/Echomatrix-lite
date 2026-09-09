@@ -304,11 +304,21 @@ class DerivConnector(BrokerConnector):
         except Exception as e:
             logger.warning(f"{symbol}: couldn't sanity-check stake against equity ({e}) — proceeding uncapped")
 
+        # Deriv's limit_order.stop_loss/take_profit are NOT price levels —
+        # per Deriv's own schema, the contract closes when "the value of
+        # the contract reaches a specific loss/profit", i.e. a dollar
+        # amount. `sl`/`tp` arrive here as absolute price levels (the
+        # same interface Binance uses, since that's the natural shape
+        # for a price-based stop/limit order there). Converting: the
+        # dollar move on a Multiplier is stake * multiplier * the
+        # percentage price move, so that's what actually gets submitted.
         limit_order = {}
-        if sl:
-            limit_order["stop_loss"] = round(sl, info.price_decimals)
-        if tp:
-            limit_order["take_profit"] = round(tp, info.price_decimals)
+        if sl and entry_price:
+            sl_amount = stake * multiplier * abs(entry_price - sl) / entry_price
+            limit_order["stop_loss"] = round(min(sl_amount, stake), 2)  # can't lose more than the stake itself
+        if tp and entry_price:
+            tp_amount = stake * multiplier * abs(tp - entry_price) / entry_price
+            limit_order["take_profit"] = round(tp_amount, 2)
 
         # Even with both upfront caps, Deriv's real per-account/per-symbol
         # ceiling isn't fully published, so this reactive backoff is a
