@@ -32,6 +32,7 @@ class SymbolInfo:
     min_volume: float
     volume_step: float
     contract_size: float
+    price_decimals: int = 5  # how many decimal places this symbol's price fields must be rounded to
 
 
 @dataclass

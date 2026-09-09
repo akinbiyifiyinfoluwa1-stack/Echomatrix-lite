@@ -171,9 +171,11 @@ class DerivConnector(BrokerConnector):
         price = float(prices[-1])
         if price <= 0:
             raise RuntimeError(f"{symbol} returned a non-positive quote ({price})")
+        pip_size = int(resp.get("pip_size", 5))
         return SymbolInfo(
             symbol=symbol, bid=price, ask=price,
-            point=0.00001, min_volume=1.0, volume_step=1.0, contract_size=1.0,
+            point=10 ** (-pip_size), min_volume=1.0, volume_step=1.0, contract_size=1.0,
+            price_decimals=pip_size,
         )
 
     async def get_account_info(self) -> AccountInfo:
@@ -304,9 +306,9 @@ class DerivConnector(BrokerConnector):
 
         limit_order = {}
         if sl:
-            limit_order["stop_loss"] = sl
+            limit_order["stop_loss"] = round(sl, info.price_decimals)
         if tp:
-            limit_order["take_profit"] = tp
+            limit_order["take_profit"] = round(tp, info.price_decimals)
 
         # Even with both upfront caps, Deriv's real per-account/per-symbol
         # ceiling isn't fully published, so this reactive backoff is a
@@ -360,9 +362,9 @@ class DerivConnector(BrokerConnector):
                                tp: Optional[float] = None) -> OrderResult:
         limit_order = {}
         if sl:
-            limit_order["stop_loss"] = sl
+            limit_order["stop_loss"] = round(sl, 5)  # generic fallback — no symbol lookup here to get exact pip_size
         if tp:
-            limit_order["take_profit"] = tp
+            limit_order["take_profit"] = round(tp, 5)
         resp = await self._call({
             "contract_update": 1, "contract_id": int(position_id), "limit_order": limit_order,
         })
