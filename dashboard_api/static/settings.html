@@ -31,6 +31,7 @@
   <select id="acct-broker-type">
     <option value="deriv">Deriv</option>
     <option value="binance">Binance</option>
+    <option value="metaapi">MetaApi (Exness, or any MT4/MT5 broker)</option>
   </select>
   <label for="acct-label">Account label (your own name for it)</label>
   <input type="text" id="acct-label" placeholder="e.g. deriv-flip1" />
@@ -66,6 +67,12 @@
       <input type="checkbox" id="acct-binance-testnet" checked />
       <label for="acct-binance-testnet" style="margin:0;">Use Testnet</label>
     </div>
+  </div>
+  <div id="acct-fields-metaapi" style="display:none;">
+    <label for="acct-metaapi-token">MetaApi API Token</label>
+    <input type="password" id="acct-metaapi-token" />
+    <label for="acct-metaapi-account-id">MetaApi Account ID</label>
+    <input type="text" id="acct-metaapi-account-id" placeholder="from app.metaapi.cloud/accounts" />
   </div>
   <div class="btn-row">
     <button class="btn-save" id="acct-save-btn">Add Account</button>
@@ -344,9 +351,10 @@ document.getElementById("research-btn").addEventListener("click", async () => {
 });
 
 document.getElementById("acct-broker-type").addEventListener("change", (e) => {
-  const isDeriv = e.target.value === "deriv";
-  document.getElementById("acct-fields-deriv").style.display = isDeriv ? "block" : "none";
-  document.getElementById("acct-fields-binance").style.display = isDeriv ? "none" : "block";
+  const type = e.target.value;
+  document.getElementById("acct-fields-deriv").style.display = type === "deriv" ? "block" : "none";
+  document.getElementById("acct-fields-binance").style.display = type === "binance" ? "block" : "none";
+  document.getElementById("acct-fields-metaapi").style.display = type === "metaapi" ? "block" : "none";
 });
 
 document.getElementById("acct-save-btn").addEventListener("click", async () => {
@@ -363,10 +371,13 @@ document.getElementById("acct-save-btn").addEventListener("click", async () => {
     body.api_token = document.getElementById("acct-deriv-token").value.trim();
     body.app_id = document.getElementById("acct-deriv-appid").value.trim() || "1089";
     body.use_demo = document.getElementById("acct-deriv-demo").checked;
-  } else {
+  } else if (brokerType === "binance") {
     body.api_key = document.getElementById("acct-binance-key").value.trim();
     body.api_secret = document.getElementById("acct-binance-secret").value.trim();
     body.testnet = document.getElementById("acct-binance-testnet").checked;
+  } else if (brokerType === "metaapi") {
+    body.metaapi_token = document.getElementById("acct-metaapi-token").value.trim();
+    body.metaapi_account_id = document.getElementById("acct-metaapi-account-id").value.trim();
   }
   msg.textContent = "Connecting...";
   msg.className = "msg";

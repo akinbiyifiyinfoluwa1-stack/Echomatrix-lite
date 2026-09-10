@@ -26,6 +26,7 @@ from sqlalchemy import select, Integer
 from brokers.base import BrokerConnector, OrderSide, OrderType
 from brokers.binance_connector import BinanceConnector
 from brokers.deriv_connector import DerivConnector
+from brokers.metaapi_connector import MetaApiConnector
 from risk.risk_manager import RiskManager, RiskConfig
 from strategies.quick_brain import QuickBrain
 from core.scanner import Scanner, ScannerConfig
@@ -89,6 +90,10 @@ async def _connect_account(broker_type: str, label: str, creds: dict) -> tuple[O
         connector = DerivConnector(
             creds.get("api_token", ""), app_id=creds.get("app_id") or "1089",
             use_demo=creds.get("use_demo", True),
+        )
+    elif broker_type == "metaapi":
+        connector = MetaApiConnector(
+            creds.get("metaapi_token", ""), creds.get("metaapi_account_id", ""),
         )
     else:
         return None, f"unknown broker type '{broker_type}'"
@@ -201,7 +206,7 @@ class AccountCredentials(BaseModel):
     to call this account (e.g. 'deriv-flip1'), independent of how many
     other accounts of the same broker_type already exist."""
     label: str
-    broker_type: str  # "binance" | "deriv"
+    broker_type: str  # "binance" | "deriv" | "metaapi"
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
     api_token: Optional[str] = None
@@ -209,6 +214,8 @@ class AccountCredentials(BaseModel):
     testnet: bool = True
     use_demo: bool = True
     flip_mode: bool = False
+    metaapi_token: Optional[str] = None
+    metaapi_account_id: Optional[str] = None
 
 
 @app.get("/api/accounts")
