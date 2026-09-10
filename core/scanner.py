@@ -11,7 +11,7 @@ place" actually happen instead of being separate parts.
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from brokers.base import BrokerConnector, OrderSide, OrderResult
 from strategies.quick_brain import QuickBrain, Signal, TrendReading
@@ -55,6 +55,10 @@ class Scanner:
         self.last_readings: list[TrendReading] = []
         self.last_breadth: MarketBreadth = MarketBreadth(0, 0, 0, 0, 0.0)
         self.last_decline_reason: str = ""
+        self._symbol_cooldowns: dict[str, datetime] = {}  # symbol -> cooldown expiry, for broker-side "not tradable right now" rejections
+        self._last_traded_candle: dict[str, int] = {}  # symbol -> candle_time of the last executed trade,
+                                                          # so the same fresh crossover can't fire repeatedly
+                                                          # across every 5-min scan until the next real candle
         self._running = False
 
     async def scan_once(self) -> list[TrendReading]:
@@ -128,6 +132,26 @@ class Scanner:
         auto-trade loop and a manual 'trade this' tap use the exact same
         path — no separate/looser logic for manual trades. Every attempt,
         successful or not, is written to the trade journal."""
+        if triggered_by == "auto" and reading.symbol in self._symbol_cooldowns:
+            if datetime.utcnow() < self._symbol_cooldowns[reading.symbol]:
+                self.last_decline_reason = (
+                    f"{reading.symbol} is on cooldown until "
+                    f"{self._symbol_cooldowns[reading.symbol].strftime('%H:%M UTC')} "
+                    f"(broker said it wasn't tradable last attempt)"
+                )
+                logger.info(f"skip {reading.symbol}: {self.last_decline_reason}")
+                return None
+            del self._symbol_cooldowns[reading.symbol]  # cooldown expired, drop it and try again normally
+
+        if (triggered_by == "auto"
+                and self._last_traded_candle.get(reading.symbol) == reading.candle_time):
+            self.last_decline_reason = (
+                f"{reading.symbol}: already traded this exact crossover — waiting for a genuinely "
+                f"new candle instead of re-entering the same, now-later trend"
+            )
+            logger.info(f"skip {reading.symbol}: {self.last_decline_reason}")
+            return None
+
         if triggered_by == "auto" and self.config.daily_loss_gate_enabled:
             from core.reconciliation import get_today_realized_pnl
             account = await self.broker.get_account_info()
@@ -244,7 +268,13 @@ class Scanner:
             sl=stop, tp=take_profit, comment=f"EchoMatrix QuickBrain {reading.strength}",
         )
         result.message += review_note
+        if not result.success and self._is_symbol_unavailable_error(result.message):
+            self._symbol_cooldowns[reading.symbol] = datetime.utcnow() + timedelta(hours=1)
+            logger.info(f"{reading.symbol}: broker says it's not tradable right now — "
+                        f"cooling down auto-trading on it for 1 hour")
         logger.info(f"{'executed' if result.success else 'failed'} {reading.symbol}: {result.message}")
+        if result.success:
+            self._last_traded_candle[reading.symbol] = reading.candle_time
         await self._log_trade(
             reading.symbol, side.value, decision.suggested_volume, entry, stop,
             reading.strength, triggered_by, success=result.success,
@@ -254,6 +284,17 @@ class Scanner:
 
     async def _execute_top(self, reading: TrendReading) -> None:
         await self.execute_signal(reading)
+
+    @staticmethod
+    def _is_symbol_unavailable_error(message: str) -> bool:
+        """Broker-side rejections meaning 'this specific symbol just
+        isn't tradable right now' (session/liquidity restrictions on
+        less-common pairs) rather than anything wrong with the trade
+        itself — worth a cooldown so auto-trading stops wasting scan
+        cycles and AI review calls retrying it every 5 minutes."""
+        markers = ("not offered", "market is closed", "not tradable", "trading is suspended")
+        lowered = message.lower()
+        return any(marker in lowered for marker in markers)
 
     def is_market_likely_closed(self) -> bool:
         """Crypto (Binance) trades 24/7, so this only applies to Deriv's

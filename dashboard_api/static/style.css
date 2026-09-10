@@ -197,6 +197,21 @@
   .pill-sell { color: var(--danger); font-weight: 600; }
   .signal-score { font-weight: 700; color: var(--accent); }
   .hint { color: var(--muted); font-size: 13px; text-align: center; padding: 10px 0; }
+  .quick-symbols {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+  }
+  .chip {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+  }
+  .chip:active { border-color: var(--accent); color: var(--accent); }
   .close-btn {
     background: transparent;
     border: 1px solid rgba(248,113,113,0.4);
@@ -225,4 +240,32 @@
   .nav-link.active {
     color: var(--accent);
     border-color: var(--accent);
+  }
+
+  /* Desktop layout — mobile styling above is untouched below this
+     breakpoint. On wider screens: center the page instead of
+     stretching edge-to-edge, and let the already-existing card
+     wrapper containers (#live-dashboard, #broker-cards, #ai-cards)
+     flow into a two-column grid instead of a single mobile column. */
+  @media (min-width: 900px) {
+    body {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 32px 24px 60px;
+    }
+    #live-dashboard,
+    #broker-cards,
+    #ai-cards {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+    /* A couple of sections make more sense spanning the full width
+       even in the two-column grid — the price chart needs room for
+       the canvas, and the scanner/history tables are naturally wide. */
+    #live-dashboard > .card:nth-child(1),
+    #live-dashboard > .card:nth-child(2) {
+      grid-column: 1 / -1;
+    }
   }

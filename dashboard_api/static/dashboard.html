@@ -52,6 +52,7 @@
         </select>
       </div>
     </div>
+    <div id="chart-quick-symbols" class="quick-symbols"></div>
     <div class="btn-row"><button class="btn-save" id="chart-load-btn">Load Chart</button></div>
     <canvas id="price-chart" height="220"></canvas>
     <div id="chart-msg" class="msg"></div>
@@ -146,7 +147,30 @@ function updateLiveDashboard(statusBrokers) {
     refreshPositions();
     refreshAutoTradeStatus();
     refreshBreadth();
+    renderQuickSymbols();
   }
+}
+
+function renderQuickSymbols() {
+  const el = document.getElementById("chart-quick-symbols");
+  if (!currentBroker) {
+    el.innerHTML = "";
+    return;
+  }
+  // Heuristic on the account label — crypto-style defaults for a
+  // Binance-labeled account, forex/commodity defaults otherwise
+  // (Deriv and MetaApi/MT4-5 accounts are both forex-oriented).
+  const isCrypto = currentBroker.toLowerCase().includes("binance");
+  const symbols = isCrypto
+    ? ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    : ["frxEURUSD", "frxGBPUSD", "frxXAUUSD"];
+  el.innerHTML = symbols.map(s => `<button class="chip" data-symbol="${s}">${s}</button>`).join("");
+  el.querySelectorAll(".chip").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.getElementById("chart-symbol").value = btn.dataset.symbol;
+      document.getElementById("chart-load-btn").click();
+    });
+  });
 }
 
 async function refreshBreadth() {
@@ -167,6 +191,7 @@ document.getElementById("live-broker-select").addEventListener("change", (e) => 
   refreshPositions();
   refreshAutoTradeStatus();
   refreshBreadth();
+  renderQuickSymbols();
 });
 
 async function refreshAccount() {

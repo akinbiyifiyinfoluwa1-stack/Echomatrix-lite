@@ -31,6 +31,9 @@ class TrendReading:
     macd_histogram: float = 0.0
     bb_position: float = 0.0  # 0 = at lower band, 1 = at upper band, 0.5 = middle
     strategy: str = "trend"   # "trend" (EMA-cross) or "mean_reversion" (range-trading)
+    candle_time: int = 0      # timestamp of the candle that produced this reading — lets the
+                               # scanner tell a genuinely new crossover from the same one still
+                               # reading as "fresh" because no new candle has formed yet
 
 
 def _ema(series: pd.Series, period: int) -> pd.Series:
@@ -154,6 +157,7 @@ class QuickBrain:
             trend_ema_fast=round(last_fast, 5), trend_ema_slow=round(last_slow, 5),
             rsi=round(last_rsi, 1), atr=round(last_atr, 5),
             macd_histogram=round(last_macd_hist, 6), bb_position=round(bb_position, 3),
+            candle_time=int(candles[-1]["time"]),
         )
 
     def analyze_mean_reversion(self, symbol: str, candles: list[dict],
@@ -210,7 +214,7 @@ class QuickBrain:
             trend_ema_fast=round(ema_fast.iloc[-1], 5), trend_ema_slow=round(ema_slow.iloc[-1], 5),
             rsi=round(last_rsi, 1), atr=round(last_atr, 5),
             macd_histogram=round(last_macd_hist, 6), bb_position=round(bb_position, 3),
-            strategy="mean_reversion",
+            strategy="mean_reversion", candle_time=int(candles[-1]["time"]),
         )
 
     def rank_opportunities(self, readings: list[TrendReading], min_strength: float = 60.0) -> list[TrendReading]:
