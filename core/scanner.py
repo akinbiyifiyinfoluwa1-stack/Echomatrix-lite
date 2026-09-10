@@ -43,6 +43,8 @@ class ScannerConfig:
     min_ai_confidence: float = 0.0      # require the AI review to clear this confidence bar, not just approve=true
     flip_mode: bool = False             # tiny accounts where 1%-risk sizing can't work (floored to the broker minimum) —
                                          # tracked mainly so it shows up in status/UI, not used for gating logic directly
+    profit_protection_enabled: bool = True  # watch open positions for early reversal signs, not just wait for SL/TP
+    min_profit_protection_confidence: float = 60.0  # AI must be at least this sure it's a real reversal before closing
 
 
 class Scanner:
@@ -333,6 +335,65 @@ class Scanner:
             except Exception as e:
                 logger.warning(f"backtest failed for {symbol}: {e}")
 
+    async def monitor_open_positions(self) -> None:
+        """Profit protection for OPEN positions — not entry logic. For
+        every position currently sitting in profit, re-run the trend
+        engine on that symbol's current data. If it now shows a fresh
+        signal in the OPPOSITE direction (the same confluence-checked
+        signal quality used for entries, not a raw noisy reading), that's
+        a real early warning the move may be reversing — not just any
+        pullback, since a mere pullback wouldn't clear that same fresh-
+        crossover-plus-confluence bar. Hands the specifics to the AI for
+        a final "real reversal vs normal pullback" judgment before
+        actually closing anything early. The existing SL/TP still
+        protects the position regardless — this only ever closes early
+        to lock in profit, never instead of the stop-loss."""
+        if not self.config.profit_protection_enabled:
+            return
+        try:
+            positions = await self.broker.get_positions()
+        except Exception as e:
+            logger.warning(f"profit protection: couldn't fetch open positions: {e}")
+            return
+
+        for pos in positions:
+            if pos.profit <= 0:
+                continue  # only ever protects existing profit, never intervenes on a loser
+            try:
+                candles = await self.broker.get_candles(pos.symbol, self.config.timeframe, self.config.candle_count)
+                reading = self.brain.analyze(pos.symbol, candles)
+                is_opposite = (
+                    (pos.side == OrderSide.BUY and reading.signal == Signal.SELL) or
+                    (pos.side == OrderSide.SELL and reading.signal == Signal.BUY)
+                )
+                if not is_opposite:
+                    continue  # still trending, or just neutral/no fresh signal at all — leave it alone
+
+                review = await ai_gateway.review_position_exit({
+                    "symbol": pos.symbol, "side": pos.side.value,
+                    "entry_price": pos.open_price, "current_price": pos.current_price,
+                    "profit": pos.profit, "tp": pos.tp,
+                    "reversal_strength": reading.strength, "rsi": reading.rsi,
+                    "macd_histogram": reading.macd_histogram,
+                })
+                if review["should_close"] and review["confidence"] >= self.config.min_profit_protection_confidence:
+                    result = await self.broker.close_position(pos.id)
+                    lesson = (f"{pos.symbol}: closed early at {review['confidence']:.0f}% AI confidence "
+                              f"of a real reversal — {review['note']}")
+                    logger.info(lesson)
+                    await self._log_lesson(
+                        situation=f"{pos.symbol} {pos.side.value} position in profit ({pos.profit:.2f}), "
+                                  f"fresh opposite signal (strength {reading.strength})",
+                        decision="closed early — profit protection" if result.success else "close attempt failed",
+                        outcome=result.message,
+                        lesson=lesson,
+                    )
+                else:
+                    logger.info(f"{pos.symbol}: opposite signal detected but AI reads it as a likely "
+                                f"pullback ({review['confidence']:.0f}% confidence it's real) — leaving it to run")
+            except Exception as e:
+                logger.warning(f"profit protection check failed for {pos.symbol}: {e}")
+
     async def run_forever(self) -> None:
         self._running = True
         while self._running:
@@ -344,6 +405,7 @@ class Scanner:
                 else:
                     ranked = await self.scan_once()
                     logger.info(f"scan complete: {len(ranked)} actionable signals")
+                    await self.monitor_open_positions()
 
                 from core.reconciliation import reconcile_broker
                 await reconcile_broker(self.broker)

@@ -163,5 +163,66 @@ class AIGateway:
                     "note": f"AI review unavailable ({e}) — proceeding on risk check alone",
                     "provider": "none"}
 
+    async def review_position_exit(self, context: dict) -> dict:
+        """A profit-protection check for an OPEN position, not a new
+        trade — the trend-analysis engine just detected a fresh signal
+        in the opposite direction from a position that's currently in
+        profit. That alone could be a real reversal, or it could just
+        be a normal pullback the original trend recovers from. This
+        asks the AI to weigh in with the fuller picture before closing
+        early and giving up the rest of a move that might still be
+        good.
+
+        Fails CLOSED (should_close: False) if the AI call itself
+        breaks — unlike a pre-trade review where erring open is safe
+        because the risk manager already cleared it, erring toward
+        closing a winning position on a whim when there's no real
+        signal to act on is the wrong default. Doing nothing just
+        leaves the existing SL/TP in charge, which is always safe."""
+        import json
+
+        prompt = (
+            "You are watching one OPEN, currently profitable trade for an "
+            "automated trading system. The trend indicator just detected a "
+            "fresh signal in the OPPOSITE direction from this position's "
+            "own side — that could mean a genuine reversal is starting, or "
+            "it could just be a normal pullback within the same larger "
+            "trend that this position was riding. Judge which one this "
+            "looks like from the numbers below.\n\n"
+            f"Symbol: {context['symbol']}\n"
+            f"Position side: {context['side']}\n"
+            f"Entry price: {context['entry_price']}\n"
+            f"Current price: {context['current_price']}\n"
+            f"Current profit: {context['profit']}\n"
+            f"Take profit target: {context.get('tp', 'not set')}\n"
+            f"New opposite signal strength (0-100): {context['reversal_strength']}\n"
+            f"RSI: {context['rsi']}\n"
+            f"MACD histogram: {context['macd_histogram']}\n\n"
+            "If this looks like a real reversal, closing now protects the "
+            "existing profit. If it looks like an ordinary pullback, "
+            "closing early would give up the rest of a move that's likely "
+            "to continue — the existing stop-loss and take-profit already "
+            "protect this position either way, so only recommend closing "
+            "when the reversal genuinely looks real, not on every wobble.\n\n"
+            "Reply with ONLY a JSON object, no markdown fences, no other text:\n"
+            '{"should_close": true or false, "confidence": 0-100, "note": "one short sentence"}'
+        )
+        try:
+            resp = await self.generate(prompt, task_type="research")
+            text = resp.text.strip()
+            if text.startswith("```"):
+                text = text.strip("`")
+                text = text.split("\n", 1)[1] if "\n" in text else text
+                if text.lower().startswith("json"):
+                    text = text[4:]
+            data = json.loads(text)
+            return {"should_close": bool(data.get("should_close", False)),
+                     "confidence": float(data.get("confidence", 0)),
+                     "note": str(data.get("note", "")), "provider": resp.provider}
+        except Exception as e:
+            return {"should_close": False, "confidence": 0.0,
+                    "note": f"AI review unavailable ({e}) — leaving the position as-is",
+                    "provider": "none"}
+
 
 gateway = AIGateway()
