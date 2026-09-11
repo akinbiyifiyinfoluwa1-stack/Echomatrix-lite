@@ -103,7 +103,7 @@ class DerivConnector(BrokerConnector):
         self._ws = None
 
     async def is_connected(self) -> bool:
-        return self._ws is not None and not self._ws.closed
+        return self._ws is not None and self._ws.close_code is None
 
     async def _call(self, payload: dict) -> dict:
         """Send one request and wait for its matching response. The
@@ -127,7 +127,7 @@ class DerivConnector(BrokerConnector):
         None/closed socket upfront, before ever touching .send(),
         closes that gap."""
         async with self._lock:
-            if self._ws is None or self._ws.closed:
+            if self._ws is None or self._ws.close_code is not None:
                 if not await self.connect():
                     raise RuntimeError(f"Deriv reconnect failed: {self.last_error}")
             try:
