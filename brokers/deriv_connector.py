@@ -114,11 +114,25 @@ class DerivConnector(BrokerConnector):
         Deriv's OTP-scoped socket doesn't answer protocol-level pings,
         so ping_interval is disabled above, but the connection can
         still die on its own), reconnect the full REST+OTP+WS chain
-        once and retry, instead of failing forever on a dead socket."""
+        once and retry, instead of failing forever on a dead socket.
+
+        Critical case this also has to cover: if a PREVIOUS call's
+        reconnect attempt itself failed (e.g. a timeout on Deriv's own
+        REST handshake), self._ws is left as None. Calling .send() on
+        None raises AttributeError, not ConnectionClosed/OSError — so
+        catching only those two exception types left the connector
+        permanently stuck the moment one reconnect attempt failed,
+        with every call after that crashing the same way forever and
+        nothing ever attempting to reconnect again. Checking for a
+        None/closed socket upfront, before ever touching .send(),
+        closes that gap."""
         async with self._lock:
+            if self._ws is None or self._ws.closed:
+                if not await self.connect():
+                    raise RuntimeError(f"Deriv reconnect failed: {self.last_error}")
             try:
                 return await self._send_and_wait(payload)
-            except (websockets.exceptions.ConnectionClosed, OSError) as e:
+            except (websockets.exceptions.ConnectionClosed, OSError, AttributeError) as e:
                 self.last_error = f"reconnecting after {type(e).__name__}: {e}"
                 if not await self.connect():
                     raise RuntimeError(f"Deriv reconnect failed: {self.last_error}") from e
@@ -149,18 +163,42 @@ class DerivConnector(BrokerConnector):
                 "sample": {k: v[:5] for k, v in by_market.items()}}
 
     async def get_symbol_info(self, symbol: str) -> SymbolInfo:
-        """Deliberately uses ticks_history (style=ticks, count=1) rather
-        than the plain `ticks` request — `ticks` implicitly creates a
-        live subscription on this connection, and calling it again for
-        a symbol already subscribed fails with 'You are already
-        subscribed', which is exactly the bug that silently produced
-        bad $0.0 quotes before this was caught. ticks_history is the
-        same on-demand, non-subscribing pattern already used reliably
-        elsewhere for candles. It returns one price (not separate
-        bid/ask — that's only in the streaming tick message), which is
-        fine here since we never submit a specific execution price to
-        Deriv anyway (orders go through at prevailing market price) —
-        this value is only used for our own local risk math."""
+        """Tries the real streaming `ticks` request first, for genuine
+        bid/ask — needed for real spread-cost checks, which a single
+        last-price value can't provide. `ticks` implicitly creates a
+        live subscription, and Deriv's rebuilt API appears to always
+        subscribe regardless of the documented subscribe-flag default,
+        so calling it again for an already-subscribed symbol used to
+        fail with 'You are already subscribed' (the bug that silently
+        produced bad $0.0 quotes before that was caught). Defended here
+        by clearing any stale subscription first with forget_all before
+        every call, rather than avoiding the subscribing endpoint
+        altogether — falls back to the older single-price method only
+        if that still doesn't work for some reason."""
+        try:
+            await self._call({"forget_all": "ticks"})
+        except Exception:
+            pass  # nothing to forget, or the forget itself failed — either way, proceed to try ticks
+        try:
+            resp = await self._call({"ticks": symbol})
+            tick = resp.get("tick")
+            if tick and "error" not in resp:
+                bid = float(tick.get("bid", tick.get("quote", 0)))
+                ask = float(tick.get("ask", tick.get("quote", 0)))
+                if bid > 0 and ask > 0:
+                    pip_size = int(tick.get("pip_size", 5))
+                    return SymbolInfo(
+                        symbol=symbol, bid=bid, ask=ask,
+                        point=10 ** (-pip_size), min_volume=1.0, volume_step=1.0, contract_size=1.0,
+                        price_decimals=pip_size,
+                    )
+        except Exception as e:
+            logger.warning(f"{symbol}: streaming tick request failed ({e}), falling back to last-price only")
+
+        # Fallback: a single last price, no real spread data. Both
+        # sides get set to the same value, which means any spread-cost
+        # check downstream simply can't catch anything for this call —
+        # better than failing the whole quote outright.
         resp = await self._call({
             "ticks_history": symbol, "count": 1, "end": "latest", "style": "ticks",
         })
@@ -303,6 +341,24 @@ class DerivConnector(BrokerConnector):
                 stake = round(max_sane_stake, 2)
         except Exception as e:
             logger.warning(f"{symbol}: couldn't sanity-check stake against equity ({e}) — proceeding uncapped")
+
+        # Spread cost — a completely separate risk from the stop-loss
+        # distance the position was originally sized against. Deriv's
+        # bid/ask spread is paid the instant a contract opens, before
+        # any price movement, and the multiplier amplifies that cost
+        # exactly the same way it amplifies pip P&L. On a small stake
+        # this can eat a large fraction of the position immediately —
+        # worth refusing outright rather than silently accepting it.
+        spread = abs(info.ask - info.bid)
+        spread_cost = stake * multiplier * spread / entry_price if entry_price else 0
+        max_spread_cost = stake * 0.15  # spread shouldn't cost more than 15% of the stake just to open
+        if spread_cost > max_spread_cost:
+            return OrderResult(
+                success=False, order_id=None, filled_price=None,
+                message=f"spread too wide for this stake/multiplier — opening would cost "
+                        f"${spread_cost:.2f} in spread alone ({spread_cost / stake * 100:.0f}% of the "
+                        f"${stake:.2f} stake), before any price movement",
+            )
 
         # Deriv's limit_order.stop_loss/take_profit are NOT price levels —
         # per Deriv's own schema, the contract closes when "the value of
